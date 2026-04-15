@@ -1,0 +1,1917 @@
+<!DOCTYPE html>
+<!--
+================================================================================
+  NCP / NAVER WORKS SLA 계산기  (사내용 BETA)
+  최종 버전: v1.5.0  |  2026-04-14
+================================================================================
+
+  v1.0.0  2026-04-08  최초 배포
+                       - NCP 클라우드 상품별 SLA 정책 (64개 상품)
+                       - 장애 기간 입력 및 월 가용률 계산
+                       - 멀티월 장애 지원 (월별 분리 계산)
+
+  v1.1.0  2026-04-10  납부 예상요금 기준 SLA 크레딧 산정
+                       - 청구서 엑셀 업로드 및 자동 파싱
+                       - 사용금액이 아닌 납부 예상요금 컬럼 인식
+                       - 크레딧 상쇄 항목 표시 (₩0 크레딧 상쇄)
+                       - 시간 입력 UX 개선 (blur/Enter 시만 정규화)
+
+  v1.2.0  2026-04-11  NAVER WORKS 탭 분리
+                       - NCP / NAVER WORKS 탭 구조 전환
+                       - NAVER WORKS 5개 서비스 SLA 정책 추가
+                         (Core, Drive, ClovaNote, Business Support, AI Studio)
+                       - NW 크레딧 구간: 95% 미만 최대 50% (NCP와 상이)
+                       - OpenAI/LLM 결함 제외 조항 반영
+
+  v1.3.0  2026-04-13  공통 SLA 및 UI 개선
+                       - NCP 미등록 상품 → 공통 SLA(99.9%) 자동 적용
+                       - 공통 SLA로 추가 버튼 (검색 결과 없을 때)
+                       - 사내용 / BETA 배지 헤더 표시
+                       - NAVER WORKS SLA URL 수정
+                       - 웍스 청구서 파싱 개선 (납부 예상 요금 컬럼 인식)
+
+  v1.4.0  2026-04-14  결과 확인 리포트 형태 개편
+                       - 장애상품 / 장애기간 / 납부예상요금 / 예상크레딧 카드
+                       - 상품별 보상 요약 섹션
+                       - 고객지원센터 링크 제거 (사내용)
+                       - 이용요금 직접 입력 모드 추가 (파일업로드 / 직접입력 탭)
+
+  v1.5.0  2026-04-14  버그 수정 및 UX 개선
+                       - 처음부터 버튼: NCP/NW 탭 전체 초기화
+                       - 붙여넣기 후 시간 자동 00:00 덮어쓰기 문제 수정
+                       - 시간 단축 버튼 교체 (자정/오전9 → :00/:15/:30/:45)
+                       - 공통 SLA 버튼 톤 다운 (주황 강조 제거)
+                       - SLA 정책 상세보기 링크 NW/NCP 분기
+                       - 청구서 불필요 항목 필터링 (세전/부가세/월합계 등)
+                       - 헤더 멀티월 문구 제거
+                       - 결과확인 장애상품 카드 개월 표기 제거
+
+================================================================================
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NCP/WORKS SLA 계산기 v1.5.0</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+const _warn=console.warn.bind(console);
+console.warn=(...a)=>{if(typeof a[0]==='string'&&a[0].includes('Babel'))return;_warn(...a);};
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f4f8;min-height:100vh;}
+input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;}
+input[type=number]{-moz-appearance:textfield;}
+</style>
+<script>
+// 에러 오버레이
+function showErr(msg) {
+  var d = document.getElementById('err-overlay');
+  if (!d) {
+    d = document.createElement('div');
+    d.id = 'err-overlay';
+    d.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#b71c1c;color:#fff;padding:12px 16px;font:12px monospace;z-index:99999;white-space:pre-wrap;max-height:50vh;overflow:auto;';
+    document.body.appendChild(d);
+  }
+  d.textContent += msg + '\n';
+}
+window.onerror = function(msg,src,line,col,err) {
+  showErr('Error: '+msg+'\nFile: '+src+'\nLine: '+line+', Col: '+col);
+  return false;
+};
+window.addEventListener('unhandledrejection', function(e) {
+  showErr('Unhandled: '+(e.reason&&e.reason.message?e.reason.message:String(e.reason)));
+});
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+function runApp() {
+  var src = document.getElementById('app-source').textContent;
+  try {
+    var result = Babel.transform(src, {presets: ['react']});
+    var fn = new Function(result.code);
+    fn();
+  } catch(e) {
+    showErr('Error: ' + e.message + '\n' + (e.stack||''));
+  }
+}
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script id="app-source" type="text/plain">
+
+const {useState,useEffect,useRef}=React;
+const SLA_URL="https://www.ncloud.com/v2/policy/sla/svc";
+const APP_VERSION="v1.5.0";
+const APP_DATE="2026-04-15";
+const pad2=n=>String(n).padStart(2,"0");
+const fmtN=n=>Math.floor(n).toLocaleString("ko-KR");
+const rCol=r=>r>=0.5?"#c62828":r>=0.25?"#e65100":r>0?"#1565c0":"#2e7d32";
+
+function mkTiers(slaTo,maxRate){
+  return[
+    {from:99.0,to:slaTo,rate:0.10,desc:"99.0%~"+slaTo+"% 미만"},
+    {from:95.0,to:99.0,rate:0.25,desc:"95.0%~99.0% 미만"},
+    {from:0,to:95.0,rate:maxRate,desc:"95.0% 미만"+(maxRate<1?" (최대 "+Math.round(maxRate*100)+"%)":"")},
+  ];
+}
+
+// ── 효율화: 공통 상수 분리 ──────────────────────────────
+const xStd=["불가항력","고객/제3자 장비·SW 장애","고객 귀책 행위","보안 정책 미준수","약관 위반","사전 공지 점검","외부 불법 침해","계약 종료","연체·베타·시험·평가판 중 장애"];
+const xStdFree=[...xStd,"무료구간"];           // 무료구간 제외 추가
+const xStdDb  =[...xStd,"외부 DB엔진 SW 충돌"]; // DB 제외 추가
+
+const errIn=[{key:"avgErrorRate",label:"월 평균 오류율 (%)",type:"float",placeholder:"예: 0.05",
+  helpText:"오류율 = HTTP 500/503 오류 응답 건수 / 해당 월 전체 API 호출 건수 × 100"}];
+
+// ── 효율화: mkOpt 팩토리 함수 ──────────────────────────
+function mkOpt(choices){return{label:"구성 방식",defaultVal:"single",choices};}
+
+// ▸ 존간이중화 옵션 (Server, Block Storage, Cloud Connect)
+const zoneOpt=mkOpt({
+  single:{label:"단일",         sla:99.9, tiers:mkTiers(99.9,1)},
+  zone:  {label:"존 간 이중화", sla:99.99,tiers:mkTiers(99.99,1)},
+});
+
+// ▸ DB HA 옵션 — 🔴 수정: 공식 SLA PDF 확인 결과 단일/HA 모두 99.95% 단일 기준 적용
+//   (Cloud DB for MSSQL SLA PDF 직접 확인: "단일 서버 혹은 고가용성 지원으로 선택 시 99.95% 보장")
+const dbHaOpt=mkOpt({
+  single:{label:"단일 서버",    sla:99.95,tiers:mkTiers(99.95,1)},
+  ha:    {label:"고가용성(HA)", sla:99.95,tiers:mkTiers(99.95,1)},
+});
+
+function isFutureDate(d){return d&&new Date(d)>new Date();}
+
+// ── 효율화: getActivePolicy 단일 함수로 tiers+sla 동시 반환 ──
+// NCP 공통 SLA (개별 정책 없는 상품에 적용, 월 가용률 99.9% 기준)
+const COMMON_SLA={
+  uptimeType:"time",sla:99.9,
+  tiers:[
+    {from:99.0,to:99.9,rate:0.10,desc:"99.0%~99.9% 미만"},
+    {from:95.0,to:99.0,rate:0.25,desc:"95.0%~99.0% 미만"},
+    {from:0,   to:95.0,rate:1.00,desc:"95.0% 미만"},
+  ],
+  effectiveDate:"2019-07-01",
+  slaNote:"⚠ 이 상품은 개별 SLA 정책이 명시되지 않아 NCP 공통 SLA(99.9%)를 적용합니다. 실제 보상은 ncloud.com 공식 원문을 반드시 확인하세요.",
+  detail:"[NCP 공통 서비스 수준 협약 (https://www.ncloud.com/v2/policy/sla/svc)]\n월 가용률(%) = 100×[1−(장애시간합(분)/해당월총시간(분))]\n\n기준 SLA: 99.9%\n크레딧 구간:\n  99.0%~99.9% 미만 → 월 이용요금의 10%\n  95.0%~99.0% 미만 → 월 이용요금의 25%\n  95.0% 미만      → 월 이용요금의 100%\n\n※ 개별 상품별로 SLA 기준이 다를 수 있으므로 반드시 공식 원문 확인 필요",
+  excludes:["불가항력(자연재해·전쟁·테러 등)","고객/제3자 장비·SW 장애","고객 귀책 행위","보안 정책 미준수","약관 위반","사전 공지 점검","외부 불법 침해로 인한 장애","계약 종료 후 장애","연체·베타·시험·평가판 이용 중 장애"],
+};
+
+function getActivePolicy(prod,opts){
+  const p=POLICIES[prod];
+  if(!p)return{...COMMON_SLA,isCommon:true};
+  if(p.tiers)return{sla:p.sla||99.9,tiers:p.tiers};
+  if(p.options){
+    for(const k of Object.keys(p.options)){
+      const opt=p.options[k],ch=(opts[prod]&&opts[prod][k])||opt.defaultVal;
+      if(opt.choices[ch])return opt.choices[ch];
+    }
+  }
+  return{sla:99.9,tiers:[]};
+}
+const getActiveTiers=(prod,opts)=>getActivePolicy(prod,opts).tiers;
+const getActiveSla  =(prod,opts)=>getActivePolicy(prod,opts).sla;
+
+const POLICIES={
+  // ── 컴퓨팅·스토리지 ────────────────────────────────────
+  "Server":{uptimeType:"time",effectiveDate:"2025-02-20",
+    slaNote:"⚠ 존 간 이중화 여부에 따라 SLA 기준이 달라집니다.",
+    detail:"가용률 = 100×[1−(장애시간합(분)/해당월총시간(분))]\n[단일] SLA 99.9% / [존간이중화] SLA 99.99%\n※ PDF 직접 확인 완료(2025-02-20 개정)",
+    options:{redundancy:zoneOpt},excludes:xStd},
+
+  "Block Storage":{uptimeType:"time",effectiveDate:"2025-02-20",
+    slaNote:"⚠ 존 간 이중화 여부에 따라 SLA 기준이 달라집니다.",
+    detail:"가용률 = 100×[1−(장애시간합(분)/해당월총시간(분))]\n[단일] SLA 99.9% / [존간이중화] SLA 99.99%\n※ Storage/Server Image/Snapshot 포함",
+    options:{redundancy:zoneOpt},excludes:xStd},
+
+  "Object Storage":{uptimeType:"objectStorageErrorRate",sla:99.9,tiers:mkTiers(99.9,1),
+    effectiveDate:"2025-07-17",
+    detail:"[PDF 공식]\n월 평균 오류율(%) = (장애시간(h) × 장애시간 동안 오류건수/총 요청건수) / 720 × 100\n월 가용률(%) = 100% − 월 평균 오류율\n\n※ 오류: HTTP 5xx 응답 코드\n※ 총 요청건수 미입력 시 장애시간 기반으로 대체 계산됩니다.",
+    extraInputs:[
+      {key:"errorCount",  label:"장애 시간 동안 발생한 오류 건수 (HTTP 5xx)",type:"number",placeholder:"예: 1500",
+        helpText:"장애가 발생한 시간 동안에만 집계된 5xx 오류 건수"},
+      {key:"totalRequests",label:"해당 월 전체 API 요청 건수",type:"number",placeholder:"예: 1000000",
+        helpText:"⚠ 장애 시간이 아닌 해당 월 전체(720시간 기준) 요청 건수를 입력하세요. 미입력 시 장애시간 기반으로 계산됩니다."},
+    ],excludes:xStd},
+
+  "NAS":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"가용률 = 100×[1−(장애시간합(분)/해당월총시간(분))]",excludes:xStd},
+
+  "Backup":{uptimeType:"backupCount",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"월가용률 = 100×[1−(오류건수/전체백업건수)]\n오류: 백업 작업 실패, 데이터 미저장 등",
+    extraInputs:[
+      {key:"totalBackups",label:"전체 백업 건수",  type:"number",placeholder:"예: 300"},
+      {key:"failedBackups",label:"오류(실패) 건수",type:"number",placeholder:"예: 2"},
+    ],excludes:xStd},
+
+  // 🟡 File Storage: 95% 미만 최대 25% 상한 — 공식 PDF 미직접확인, 원문 재확인 권장
+  "File Storage":{uptimeType:"time",sla:99.0,
+    tiers:[
+      {from:95.0,to:99.0,rate:0.10,desc:"95.0%~99.0% 미만"},
+      {from:0,to:95.0,rate:0.25,desc:"95.0% 미만 (최대 25%)"},
+    ],effectiveDate:"2019-12-30",
+    slaNote:"⚠ SLA 기준 99.0%(타 상품과 다름). 95% 미만 최대 25% — 공식 원문 재확인 권장.",
+    detail:"가용률 = 100×[1−(장애시간합(분)/해당월총시간(분))]\nSLA 기준 99.0% / 최대 보상 25%\n※ 공식 SLA 원문 직접 확인 권장",
+    excludes:xStd},
+
+  "Cloud Functions":{uptimeType:"errorRate",sla:99.95,tiers:mkTiers(99.95,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: HTTP 500/503\n가용률 = 100%−월평균오류율\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  // ── 컨테이너·네트워킹 ──────────────────────────────────
+  "Kubernetes Service (NKS)":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2023-11-23",
+    detail:"컨트롤 플레인 장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "Load Balancer":{uptimeType:"time",sla:99.99,tiers:mkTiers(99.99,1),effectiveDate:"2019-12-30",
+    detail:"가용률 = 100×[1−(장애시간합(분)/해당월총시간(분))]",excludes:xStd},
+
+  "NAT Gateway":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "Global Traffic Manager":{uptimeType:"time",sla:99.99,tiers:mkTiers(99.99,1),effectiveDate:"2019-12-30",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "Global CDN":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: HTTP 500/503, 콘텐츠 전송 실패, 원본 서버 접근 불가\n가용률 = 100%−월평균오류율",
+    extraInputs:errIn,excludes:xStd},
+
+  "Global Edge":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2022-11-29",
+    detail:"오류율 기반 산정.\n오류: HTTP 500/503, 엣지 처리 실패\n가용률 = 100%−월평균오류율",
+    extraInputs:errIn,excludes:xStd},
+
+  "IPsec VPN":{uptimeType:"time",sla:99.95,tiers:mkTiers(99.95,1),effectiveDate:"2019-12-30",
+    detail:"장애 시간(분) 기준 산정. Manage IPsec VPN 포함.",excludes:xStd},
+
+  "SSL VPN":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "Cloud Connect":{uptimeType:"time",effectiveDate:"2019-12-30",
+    slaNote:"⚠ 이중화 구성 여부에 따라 SLA 기준이 달라집니다.",
+    detail:"단일: SLA 99.9% / 이중화: SLA 99.99%",
+    options:{redundancy:mkOpt({
+      dual:  {label:"이중화",sla:99.99,tiers:mkTiers(99.99,1)},
+      single:{label:"단일",  sla:99.9, tiers:mkTiers(99.9,1)},
+    })},excludes:xStd},
+
+  "GeoLocation":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: API 호출 실패(HTTP 500/503)\n가용률 = 100%−월평균오류율\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "Maps":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 지도 타일 요청 실패, API 오류(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  // ── 데이터베이스 ────────────────────────────────────────
+  // 🔴 수정: 단일/HA 모두 99.95% (Cloud DB for MSSQL SLA PDF 직접 확인)
+  "Cloud DB for MySQL":{uptimeType:"time",effectiveDate:"2023-11-23",
+    slaNote:"⚠ 공식 SLA: 단일·HA 구성 모두 99.95% 적용 (PDF 직접 확인).",
+    detail:"장애 시간(분) 기준 산정.\n단일/HA 모두 SLA 99.95% 적용\n※ 외부 DB엔진 SW 충돌 제외",
+    options:{haMode:dbHaOpt},excludes:xStdDb},
+
+  "Cloud DB for MSSQL":{uptimeType:"time",effectiveDate:"2023-12-14",
+    slaNote:"⚠ 공식 SLA: 단일·HA 구성 모두 99.95% 적용 (PDF 직접 확인).",
+    detail:"장애 시간(분) 기준 산정.\n단일/HA 모두 SLA 99.95% 적용\n※ 외부 DB엔진 SW 충돌 제외",
+    options:{haMode:dbHaOpt},excludes:xStdDb},
+
+  "Cloud DB for PostgreSQL":{uptimeType:"time",effectiveDate:"2023-11-23",
+    slaNote:"⚠ 공식 SLA: 단일·HA 구성 모두 99.95% 적용 (PDF 직접 확인 기준 적용).",
+    detail:"장애 시간(분) 기준 산정.\n단일/HA 모두 SLA 99.95% 적용\n※ 외부 DB엔진 SW 충돌 제외",
+    options:{haMode:dbHaOpt},excludes:xStdDb},
+
+  "Cloud DB for MongoDB":{uptimeType:"time",effectiveDate:"2023-11-23",
+    detail:"Stand-alone/Replica Set/Sharded Cluster 구성 시에만 SLA 적용. SLA 99.95%",
+    options:{clusterMode:{label:"클러스터 구성",defaultVal:"applicable",choices:{
+      applicable:   {label:"Stand-alone/Replica Set/Sharded Cluster",sla:99.95,tiers:mkTiers(99.95,1)},
+      notApplicable:{label:"해당 구성 미사용 (SLA 미해당)",          sla:99.95,tiers:[]},
+    }}},excludes:xStdDb},
+
+  // 🟡 Cloud DB for Cache: effectiveDate 2025-06-19 — 공식 PDF 미직접확인, 재확인 권장
+  "Cloud DB for Cache":{uptimeType:"time",effectiveDate:"2025-06-19",
+    slaNote:"⚠ 단일·HA 모두 99.95% 적용. 효력일(2025-06-19) 공식 원문 재확인 권장.",
+    detail:"장애 시간(분) 기준 산정.\n단일/HA 모두 SLA 99.95% 적용\n※ 외부 DB엔진 SW 충돌 제외",
+    options:{haMode:dbHaOpt},excludes:xStdDb},
+
+  "Cloud Data Streaming Service":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-09-17",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "Cloud Hadoop":{uptimeType:"errorRate",effectiveDate:"2019-12-30",
+    slaNote:"⚠ 고가용성(HA) 지원으로 이용하는 경우에만 SLA 적용.",
+    detail:"오류율 기반 산정. HA 지원 이용 시에만 SLA 적용.\n오류: HTTP 500/503, 클러스터 응답 불가",
+    extraInputs:errIn,
+    options:{haMode:mkOpt({
+      yes:{label:"고가용성(HA) 지원",      sla:99.9,tiers:mkTiers(99.9,1)},
+      no: {label:"HA 미적용 (SLA 미해당)", sla:99.9,tiers:[]},
+    })},excludes:xStd},
+
+  // ── 보안 ────────────────────────────────────────────────
+  "App Safer":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "API Gateway":{uptimeType:"errorRate",sla:99.95,tiers:mkTiers(99.95,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: HTTP 500/503, 백엔드 연결 실패\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "Secure Zone Firewall":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "Security Monitoring":{uptimeType:"time",effectiveDate:"2022-09-22",
+    slaNote:"⚠ Basic 상품 SLA 미적용. Single WAF는 일반 구간(99.0~99.9%→10%, 95~99%→25%) 외에 90~95%→10%, 85~90%→25%, 85% 미만→100% 구간이 추가 적용됩니다.",
+    detail:"WAF 장애 시간(분) 기준 산정.\n[일반] SLA 99.9% 기준 3구간\n[Single WAF] SLA 99.9% 기준 5구간 (85% 미만까지 확장)\n※ Basic 상품은 SLA 미적용",
+    options:{wafType:{label:"WAF 구성 방식",defaultVal:"general",choices:{
+      general:  {label:"일반 (Basic 제외)",sla:99.9,tiers:mkTiers(99.9,1)},
+      singleWaf:{label:"Single WAF",sla:99.9,tiers:[
+        {from:99.0,to:99.9,rate:0.10,desc:"99.0%~99.9% 미만"},
+        {from:95.0,to:99.0,rate:0.25,desc:"95.0%~99.0% 미만"},
+        {from:90.0,to:95.0,rate:0.10,desc:"90.0%~95.0% 미만"},
+        {from:85.0,to:90.0,rate:0.25,desc:"85.0%~90.0% 미만"},
+        {from:0,  to:85.0,rate:1.00,desc:"85.0% 미만"},
+      ]},
+    }}},excludes:[...xStd,"Basic 상품"]},
+
+  "File Safer":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 파일 검사 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "Private CA":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-09-01",
+    detail:"오류율 기반 산정.\n오류: 인증서 발급/검증 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "CAPTCHA":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: CAPTCHA 생성/검증 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "Key Management Service":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 키 생성/암복호화 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "Webshell Behavior Detector":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-11-18",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  // ── 데이터·분석 ─────────────────────────────────────────
+  "Effective Log Search & Analytics":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 로그 수집/검색 API 실패(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "Search Engine Service":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2021-05-27",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "Cloud Search":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 검색 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "HEaaN Homomorphic Analytics":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2021-09-16",
+    detail:"오류율 기반 산정.\n오류: 동형 암호화 연산 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "Real User Analytics":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "Pinpoint Cloud":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-07-16",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "ARC eye":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2022-10-20",
+    detail:"오류율 기반 산정.\n오류: 이상 탐지 API 실패(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "Data Catalog":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2022-12-16",
+    detail:"오류율 기반 산정.\n오류: 데이터 카탈로그 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "Data Flow":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2023-11-23",
+    detail:"오류율 기반 산정.\n오류: 파이프라인 실행 실패, API 오류(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "Data Forest":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2021-05-27",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "Data Stream":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2025-09-18",
+    detail:"오류율 기반 산정.\n오류: 스트림 수집/처리 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "Data Query":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2024-06-20",
+    detail:"오류율 기반 산정.\n오류: 쿼리 실행 실패, API 오류(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  // ── 개발·DevOps ─────────────────────────────────────────
+  "Source Build":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 빌드 작업 실패, API 오류(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "Source Commit":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 저장소 접근/쓰기 실패, API 오류(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "Source Pipeline":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 파이프라인 실행 실패, API 오류(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "SourceBand":{uptimeType:"errorRate",sla:99.95,tiers:mkTiers(99.95,1),effectiveDate:"2023-05-25",
+    detail:"오류율 기반 산정.\n오류: 프로젝트 관리/협업 API 실패(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  // ── 커뮤니케이션·미디어 ────────────────────────────────
+  "Cloud Outbound Mailer":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 메일 발송 API 실패(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "Simple & Easy Notification Service":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2025-03-20",
+    detail:"오류율 기반 산정.\n오류: SMS/LMS/MMS/Push 발송 API 실패(HTTP 500/503)\n※ 해외 통신사 수신 불가, 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:[...xStdFree,"해외통신사 수신불가"]},
+
+  "Game":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2021-01-21",
+    detail:"장애 시간(분) 기준 산정. GAMEPOT/Game Report/Game Chat 포함.",excludes:xStd},
+
+  "Live Station":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  "VOD Station":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-02-12",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  // ✅ VOD Transcoder: 오류율 기반, HTTP 500/503 정의 PDF 직접 확인
+  "VOD Transcoder":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: HTTP 500 또는 503 오류 코드를 반환하는 것\n가용률 = 100%−월평균오류율",
+    extraInputs:errIn,excludes:xStd},
+
+  // 🟡 Media Connect Center: 95% 미만 50% 상한 — 공식 PDF 미직접확인, 원문 재확인 권장
+  "Media Connect Center":{uptimeType:"time",sla:99.9,
+    tiers:[
+      {from:99.0,to:99.9,rate:0.10,desc:"99~99.9% 미만"},
+      {from:95.0,to:99.0,rate:0.25,desc:"95~99% 미만"},
+      {from:0,  to:95.0,rate:0.50,desc:"95% 미만 (최대 50%)"},
+    ],effectiveDate:"2021-11-25",
+    slaNote:"⚠ 95% 미만 최대 보상 50% — 공식 SLA 원문 재확인 권장.",
+    detail:"장애 시간(분) 기준 산정.\n※ 95% 미만 시 최대 보상 월 청구금액의 50%\n※ 공식 SLA 원문 재확인 권장",
+    excludes:xStd},
+
+  "Media Intelligence":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2025-11-20",
+    detail:"오류율 기반 산정.\n오류: 미디어 분석 API 실패(HTTP 500/503)\n※ Basic 상품 SLA 미적용",
+    extraInputs:errIn,excludes:[...xStd,"Basic 상품"]},
+
+  "Image Optimizer":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 이미지 변환/최적화 API 실패(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  // 🟡 WORKBOX: 95% 미만 50% 상한 — 공식 PDF 미직접확인, 원문 재확인 권장
+  "WORKBOX":{uptimeType:"time",sla:99.9,
+    tiers:[
+      {from:99.0,to:99.9,rate:0.10,desc:"99~99.9% 미만"},
+      {from:95.0,to:99.0,rate:0.25,desc:"95~99% 미만"},
+      {from:0,  to:95.0,rate:0.50,desc:"95% 미만 (최대 50%)"},
+    ],effectiveDate:"2019-12-30",
+    slaNote:"⚠ 95% 미만 최대 보상 50% — 공식 SLA 원문 재확인 권장.",
+    detail:"장애 시간(분) 기준 산정.\n※ 95% 미만 시 최대 보상 월 청구금액의 50%\n※ 공식 SLA 원문 재확인 권장",
+    excludes:xStd},
+
+  "Ncloud Chat":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2022-04-21",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  // ── AI·CLOVA ────────────────────────────────────────────
+  "CLOVA Speech":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-11-18",
+    detail:"오류율 기반 산정.\n오류: 음성 인식/합성 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "CLOVA Speech Recognition":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-09-17",
+    detail:"오류율 기반 산정.\n오류: STT API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "CLOVA Speech Synthesis":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-09-17",
+    detail:"오류율 기반 산정.\n오류: TTS API 실패(HTTP 500/503)\n※ CLOVA Premium Voice, CLOVA Voice 포함",
+    extraInputs:errIn,excludes:xStd},
+
+  "CLOVA AiCall":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-11-18",
+    detail:"오류율 기반 산정.\n오류: AI 콜 API 실패(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "CLOVA Chatbot":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-09-17",
+    detail:"오류율 기반 산정.\n오류: 챗봇 API 실패(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "CLOVA Dubbing":{uptimeType:"time",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-12-22",
+    detail:"장애 시간(분) 기준 산정.",excludes:xStd},
+
+  // ✅ CLOVA Face Recognition: PDF 직접 확인 — 오류율 기반, HTTP 500/503, effectiveDate 2020-09-17
+  "CLOVA Face Recognition":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-09-17",
+    detail:"오류율 기반 산정.\n오류: 얼굴 인식 API 실패(HTTP 500/503 오류 코드)\n※ PDF 직접 확인 완료",
+    extraInputs:errIn,excludes:xStd},
+
+  "CLOVA FaceSign":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2021-07-22",
+    detail:"오류율 기반 산정.\n오류: 얼굴 인증 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "CLOVA OCR":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2020-09-17",
+    detail:"오류율 기반 산정.\n오류: OCR API 실패(HTTP 500/503)\n※ 무료 구간 SLA 미적용",
+    extraInputs:errIn,excludes:xStdFree},
+
+  "Papago Translation":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2021-05-27",
+    detail:"오류율 기반 산정.\n오류: 번역 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "Ncloud Pose Estimation":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 자세 추정 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "Object Detection":{uptimeType:"errorRate",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"오류율 기반 산정.\n오류: 객체 감지 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  "AiTEMS":{uptimeType:"errorRate",sla:99.95,tiers:mkTiers(99.95,1),effectiveDate:"2021-11-25",
+    detail:"오류율 기반 산정.\n오류: 추천 API 실패(HTTP 500/503)",
+    extraInputs:errIn,excludes:xStd},
+
+  // ── 모니터링·기타 ───────────────────────────────────────
+  "Web Service Monitoring System":{uptimeType:"monitorCount",sla:99.9,tiers:mkTiers(99.9,1),effectiveDate:"2019-12-30",
+    detail:"모니터링건수 기반 산정.\n월가용률 = 100%−(오류건수/전체모니터링건수×100)\n※ 무료 구간 SLA 미적용",
+    extraInputs:[
+      {key:"totalMonitor",label:"전체 모니터링 건수",type:"number",placeholder:"예: 43200"},
+      {key:"errorMonitor", label:"오류 발생 건수",   type:"number",placeholder:"예: 10"},
+    ],excludes:xStdFree},
+
+  // ✅ VMware on Ncloud: PDF 직접 확인 — 99.95%, 장애시간 기반
+  "VMware on Ncloud":{uptimeType:"time",sla:99.95,tiers:mkTiers(99.95,1),effectiveDate:"2019-12-30",
+    detail:"장애 시간(분) 기준 산정.\n※ PDF 직접 확인 완료",excludes:xStd},
+
+  // ── 네이버웍스(NAVER WORKS) ─────────────────────────────────
+  // 공통: SLA 99.9%, 5분간 5% 초과 서비스 접속 불가 = 장애
+  // 크레딧: 99~99.9%→10%, 95~99%→25%, 95%미만→50% (NCP 일반상품과 상이)
+  // 이용요금: 할인 받은 경우 할인된 가격 기준, 실제 납부금액 상한
+  "NAVER WORKS Core":{uptimeType:"worksTime",sla:99.9,
+    tiers:[
+      {from:99.0,to:99.9,rate:0.10,desc:"99.0%~99.9% 미만 → 10%"},
+      {from:95.0,to:99.0,rate:0.25,desc:"95.0%~99.0% 미만 → 25%"},
+      {from:0,   to:95.0,rate:0.50,desc:"95.0% 미만 → 50%"},
+    ],
+    effectiveDate:"2024-01-01",
+    slaNote:"⚠ 장애 기준: 도메인 내 구성원의 서비스 접속 불가 비율이 5분간 5% 초과. 95% 미만 시 최대 50% 크레딧(NCP 일반상품 100%와 상이).",
+    detail:"[NAVER WORKS Core SLA]\n월 가용률(%) = 100×[1−(장애시간합(분)/해당월 유료서비스 가동시간(분))]\n장애: 도메인별 구성원 서비스 접속 불가 비율이 5분간 5% 초과\n크레딧: 99~99.9%→10% / 95~99%→25% / 95%미만→50%\n※ 크레딧은 해당 월 실제 납부금액 초과 불가",
+    excludes:["고객 소유 장비 오류·하자","불가항력(자연재해·전쟁·테러·소요·국가비상사태·전국적네트워크장애 등)","유료서비스 전체가 아닌 특정 기능 사용 불가","사업자 제공 서비스 장애","고객 귀책 행위(필수SW 미설치·임의삭제 등)","보안 정책 미준수","오입력(존재하지 않는 파일 액세스 요청 등)·약관 위반","사전 공지 점검"]},
+
+  "WORKS Drive":{uptimeType:"worksTime",sla:99.9,
+    tiers:[
+      {from:99.0,to:99.9,rate:0.10,desc:"99.0%~99.9% 미만 → 10%"},
+      {from:95.0,to:99.0,rate:0.25,desc:"95.0%~99.0% 미만 → 25%"},
+      {from:0,   to:95.0,rate:0.50,desc:"95.0% 미만 → 50%"},
+    ],
+    effectiveDate:"2024-01-01",
+    slaNote:"⚠ 장애 기준: 도메인 내 구성원의 서비스 접속 불가 비율이 5분간 5% 초과. 95% 미만 시 최대 50% 크레딧.",
+    detail:"[WORKS Drive SLA]\n월 가용률(%) = 100×[1−(장애시간합(분)/해당월 유료서비스 가동시간(분))]\n장애: 도메인별 구성원 서비스 접속 불가 비율이 5분간 5% 초과\n크레딧: 99~99.9%→10% / 95~99%→25% / 95%미만→50%\n※ 크레딧은 해당 월 실제 납부금액 초과 불가",
+    excludes:["고객 소유 장비 오류·하자","불가항력(자연재해·전쟁·테러·소요·국가비상사태·전국적네트워크장애 등)","유료서비스 전체가 아닌 특정 기능 사용 불가","사업자 제공 서비스 장애","고객 귀책 행위(필수SW 미설치·임의삭제 등)","보안 정책 미준수","오입력(존재하지 않는 파일 액세스 요청 등)·약관 위반","사전 공지 점검","서비스 이용 고객 시스템 사고 확산 방지로 인한 중단","외부 불법 침해로 인한 서비스 장애","계약 종료·이용권 종료"]},
+
+  "NAVER WORKS ClovaNote":{uptimeType:"worksTime",sla:99.9,
+    tiers:[
+      {from:99.0,to:99.9,rate:0.10,desc:"99.0%~99.9% 미만 → 10%"},
+      {from:95.0,to:99.0,rate:0.25,desc:"95.0%~99.0% 미만 → 25%"},
+      {from:0,   to:95.0,rate:0.50,desc:"95.0% 미만 → 50%"},
+    ],
+    effectiveDate:"2024-01-01",
+    slaNote:"⚠ 장애 기준: 도메인 내 구성원 서비스 접속 불가 비율 5분간 5% 초과. 95% 미만 시 최대 50% 크레딧. OpenAI LLM 솔루션 자체 결함·장애·오류는 SLA 제외.",
+    detail:"[NAVER WORKS ClovaNote SLA]\n월 가용률(%) = 100×[1−(장애시간합(분)/해당월 유료서비스 가동시간(분))]\n장애: 도메인별 구성원 서비스 접속 불가 비율이 5분간 5% 초과\n크레딧: 99~99.9%→10% / 95~99%→25% / 95%미만→50%\n※ OpenAI 등 외부 LLM 솔루션 자체 결함·장애·오류는 SLA 제외\n※ 크레딧은 해당 월 실제 납부금액 초과 불가",
+    excludes:["고객 소유 장비 오류·하자","불가항력(자연재해·전쟁·테러·소요·국가비상사태·전국적네트워크장애 등)","유료목적 기능 사용 불가(전체 서비스 아닌 경우)","사업자 제공 서비스 장애","OpenAI 등 외부 LLM 솔루션 자체 결함·장애·오류","고객 귀책 행위(필수SW 미설치·임의삭제 등)","보안 정책 미준수","오입력(존재하지 않는 파일 액세스 요청 등)·약관 위반","사전 공지 점검"]},
+
+  "WORKS Business Support":{uptimeType:"worksTime",sla:99.9,
+    tiers:[
+      {from:99.0,to:99.9,rate:0.10,desc:"99.0%~99.9% 미만 → 10%"},
+      {from:95.0,to:99.0,rate:0.25,desc:"95.0%~99.0% 미만 → 25%"},
+      {from:0,   to:95.0,rate:0.50,desc:"95.0% 미만 → 50%"},
+    ],
+    effectiveDate:"2024-01-01",
+    slaNote:"⚠ 장애 기준: 도메인 내 구성원 서비스 접속 불가 비율 5분간 5% 초과. 95% 미만 시 최대 50% 크레딧.",
+    detail:"[WORKS Business Support SLA]\n월 가용률(%) = 100×[1−(장애시간합(분)/해당월 유료서비스 가동시간(분))]\n장애: 도메인별 구성원 서비스 접속 불가 비율이 5분간 5% 초과\n크레딧: 99~99.9%→10% / 95~99%→25% / 95%미만→50%\n※ 크레딧은 해당 월 실제 납부금액 초과 불가",
+    excludes:["고객 소유 장비 오류·하자","불가항력(자연재해·전쟁·테러·소요·국가비상사태·전국적네트워크장애 등)","유료서비스 전체가 아닌 특정 기능 사용 불가","사업자 제공 서비스 장애","고객 귀책 행위(필수SW 미설치·임의삭제 등)","보안 정책 미준수","오입력(존재하지 않는 파일 액세스 요청 등)·약관 위반","사전 공지 점검","서비스 이용 고객 시스템 사고 확산 방지로 인한 중단","외부 불법 침해로 인한 서비스 장애","계약 종료·이용권 종료"]},
+
+  "NAVER WORKS AI Studio":{uptimeType:"worksTime",sla:99.9,
+    tiers:[
+      {from:99.0,to:99.9,rate:0.10,desc:"99.0%~99.9% 미만 → 10%"},
+      {from:95.0,to:99.0,rate:0.25,desc:"95.0%~99.0% 미만 → 25%"},
+      {from:0,   to:95.0,rate:0.50,desc:"95.0% 미만 → 50%"},
+    ],
+    effectiveDate:"2024-01-01",
+    slaNote:"⚠ 장애 기준: 도메인 내 구성원 서비스 접속 불가 비율 5분간 5% 초과. 95% 미만 시 최대 50% 크레딧. 검색/답변 LLM 자체 결함·오류는 SLA 제외.",
+    detail:"[NAVER WORKS AI Studio SLA]\n월 가용률(%) = 100×[1−(장애시간합(분)/해당월 유료서비스 가동시간(분))]\n장애: 도메인별 구성원 서비스 접속 불가 비율이 5분간 5% 초과\n크레딧: 99~99.9%→10% / 95~99%→25% / 95%미만→50%\n※ 검색/답변 생성 LLM 솔루션 자체 결함·오류는 SLA 제외\n※ 크레딧은 해당 월 실제 납부금액 초과 불가",
+    excludes:["고객 소유 장비 오류·하자","불가항력(자연재해·전쟁·테러·소요·국가비상사태·전국적네트워크장애 등)","검색·답변 생성 LLM 솔루션 자체 결함·장애·오류","유료서비스 전체가 아닌 특정 기능 사용 불가","사업자 제공 서비스 장애","고객 귀책 행위(필수SW 미설치·임의삭제 등)","보안 정책 미준수","오입력(존재하지 않는 파일 액세스 요청 등)·약관 위반","사전 공지 점검","서비스 이용 고객 시스템 사고 확산 방지로 인한 중단"]},
+
+};
+
+// ── 상품 목록 ────────────────────────────────────────────
+const PRODS_LIST=[
+  {cat:"컴퓨팅·스토리지",  items:["Server","Block Storage","Object Storage","NAS","Backup","File Storage","Cloud Functions"]},
+  {cat:"컨테이너·네트워킹",items:["Kubernetes Service (NKS)","Load Balancer","NAT Gateway","Global Traffic Manager","Global CDN","Global Edge","IPsec VPN","SSL VPN","Cloud Connect","GeoLocation","Maps"]},
+  {cat:"데이터베이스",      items:["Cloud DB for MySQL","Cloud DB for MSSQL","Cloud DB for PostgreSQL","Cloud DB for MongoDB","Cloud DB for Cache","Cloud Data Streaming Service","Cloud Hadoop"]},
+  {cat:"보안",              items:["App Safer","API Gateway","Secure Zone Firewall","Security Monitoring","File Safer","Private CA","CAPTCHA","Key Management Service","Webshell Behavior Detector"]},
+  {cat:"데이터·분석",       items:["Effective Log Search & Analytics","Search Engine Service","Cloud Search","HEaaN Homomorphic Analytics","Real User Analytics","Pinpoint Cloud","ARC eye","Data Catalog","Data Flow","Data Forest","Data Stream","Data Query"]},
+  {cat:"개발·DevOps",       items:["Source Build","Source Commit","Source Pipeline","SourceBand"]},
+  {cat:"커뮤니케이션·미디어",items:["Cloud Outbound Mailer","Simple & Easy Notification Service","Game","Live Station","VOD Station","VOD Transcoder","Media Connect Center","Media Intelligence","Image Optimizer","WORKBOX","Ncloud Chat"]},
+  {cat:"AI·CLOVA",          items:["CLOVA Speech","CLOVA Speech Recognition","CLOVA Speech Synthesis","CLOVA AiCall","CLOVA Chatbot","CLOVA Dubbing","CLOVA Face Recognition","CLOVA FaceSign","CLOVA OCR","Papago Translation","Ncloud Pose Estimation","Object Detection","AiTEMS"]},
+  {cat:"모니터링·기타",     items:["Web Service Monitoring System","VMware on Ncloud"]},
+
+];
+
+// ── 네이버웍스 전용 상품 목록 ────────────────────────────
+const NW_PRODS=["NAVER WORKS Core","WORKS Drive","NAVER WORKS ClovaNote","WORKS Business Support","NAVER WORKS AI Studio"];
+const NW_SLA_URL="https://naver.worksmobile.com/terms/works-core-sla/";
+
+// ── 상품 별칭 (검색) ─────────────────────────────────────
+const PROD_ALIASES={
+  "Server":["서버","가상서버","vm","인스턴스","ssd서버","gpu서버","베어메탈","hpc"],
+  "Block Storage":["블록스토리지","스토리지","볼륨","디스크"],
+  "Object Storage":["오브젝트스토리지","s3","버킷","archive"],
+  "NAS":["nas","네트워크스토리지","파일시스템"],
+  "Backup":["백업"],
+  "File Storage":["파일스토리지","nfs"],
+  "Cloud Functions":["클라우드함수","함수","serverless","서버리스","faas","lambda"],
+  "Load Balancer":["로드밸런서","lb","부하분산"],
+  "NAT Gateway":["nat","natgw"],
+  "Global Traffic Manager":["gtm","글로벌트래픽","global route","글로벌라우트"],
+  "Global CDN":["cdn","콘텐츠전송","글로벌cdn"],
+  "Global Edge":["엣지","edge","글로벌엣지"],
+  "IPsec VPN":["ipsec","vpn","가상사설망"],
+  "SSL VPN":["ssl","sslvpn"],
+  "Cloud Connect":["클라우드커넥트","전용선"],
+  "GeoLocation":["지오로케이션","위치정보","ip위치"],
+  "Maps":["지도","맵"],
+  "Kubernetes Service (NKS)":["쿠버네티스","k8s","nks","컨테이너"],
+  "Cloud DB for MySQL":["mysql","마이에스큐엘","rdb","cdb mysql"],
+  "Cloud DB for MSSQL":["mssql","sql server","ms sql"],
+  "Cloud DB for PostgreSQL":["postgresql","포스트그레","postgres"],
+  "Cloud DB for MongoDB":["mongodb","몽고db","nosql"],
+  "Cloud DB for Cache":["cache","캐시","redis","밸키","valkey","인메모리"],
+  "Cloud Data Streaming Service":["데이터스트리밍","kafka","카프카","메시지큐"],
+  "Cloud Hadoop":["hadoop","하둡","클라우드하둡","빅데이터","spark","스파크"],
+  "API Gateway":["api게이트웨이","apigw","api관리"],
+  "App Safer":["앱세이퍼","모바일보안","앱보안"],
+  "Secure Zone Firewall":["방화벽","firewall","시큐어존"],
+  "Security Monitoring":["보안모니터링","waf","웹방화벽","siem"],
+  "File Safer":["파일세이퍼","파일검사","악성코드"],
+  "Private CA":["사설ca","인증기관","인증서발급"],
+  "CAPTCHA":["캡차","봇방지"],
+  "Key Management Service":["kms","키관리","암호화키"],
+  "Webshell Behavior Detector":["웹쉘","웹쉘탐지"],
+  "Effective Log Search & Analytics":["로그검색","elsa","로그분석"],
+  "Search Engine Service":["검색엔진","ses"],
+  "Cloud Search":["클라우드서치","검색"],
+  "HEaaN Homomorphic Analytics":["동형암호","heaan"],
+  "Real User Analytics":["rua","실사용자분석"],
+  "Pinpoint Cloud":["핀포인트","apm","성능모니터링"],
+  "ARC eye":["이상탐지","anomaly","아크아이"],
+  "Data Catalog":["데이터카탈로그","메타데이터"],
+  "Data Flow":["데이터플로우","etl","파이프라인"],
+  "Data Forest":["데이터포레스트","데이터레이크"],
+  "Data Stream":["데이터스트림","serverless kafka"],
+  "Data Query":["데이터쿼리","쿼리서비스"],
+  "Source Build":["소스빌드","빌드","ci"],
+  "Source Commit":["소스커밋","git","형상관리","버전관리"],
+  "Source Pipeline":["소스파이프라인","cicd","ci/cd"],
+  "SourceBand":["소스밴드","프로젝트관리","이슈트래커"],
+  "Cloud Outbound Mailer":["메일","이메일","smtp","메일발송"],
+  "Simple & Easy Notification Service":["sens","sms","lms","mms","push","알림","문자","푸시알림"],
+  "Game":["게임","gamepot","게임팟"],
+  "Live Station":["라이브방송","라이브스트리밍","live","방송"],
+  "VOD Station":["vod","동영상","비디오"],
+  "VOD Transcoder":["트랜스코더","인코딩","동영상변환"],
+  "Media Connect Center":["미디어커넥트","방송장비연동"],
+  "Media Intelligence":["미디어인텔리전스","영상분석","미디어분석"],
+  "Image Optimizer":["이미지최적화","이미지변환","썸네일"],
+  "WORKBOX":["워크박스","그룹웨어","협업","인트라넷"],
+  "Ncloud Chat":["채팅","chat","채팅서비스"],
+  "CLOVA Speech":["클로바스피치","음성인식합성","stt tts"],
+  "CLOVA Speech Recognition":["csr","stt","음성인식","speech to text"],
+  "CLOVA Speech Synthesis":["tts","음성합성","text to speech","clova voice","클로바보이스"],
+  "CLOVA AiCall":["ai콜","ai전화","자동전화"],
+  "CLOVA Chatbot":["챗봇","chatbot","대화ai"],
+  "CLOVA Dubbing":["더빙","dubbing"],
+  "CLOVA Face Recognition":["얼굴인식","안면인식"],
+  "CLOVA FaceSign":["페이스사인","얼굴인증","생체인증"],
+  "CLOVA OCR":["ocr","문자인식","광학문자인식"],
+  "Papago Translation":["파파고","번역","기계번역","자동번역"],
+  "Ncloud Pose Estimation":["포즈추정","자세인식","동작인식"],
+  "Object Detection":["객체감지","객체인식","사물인식"],
+  "AiTEMS":["ai추천","추천엔진","개인화추천"],
+  "Web Service Monitoring System":["wsms","웹모니터링","서비스모니터링","uptime"],
+  "VMware on Ncloud":["vmware","vm웨어","가상화"],
+  "NAVER WORKS Core":["네이버웍스","naverworks","works core","웍스코어","works","naver works"],
+  "WORKS Drive":["웍스드라이브","works drive","worksdrive","드라이브"],
+  "NAVER WORKS ClovaNote":["클로바노트","clovanote","works clovanote","웍스클로바노트"],
+  "WORKS Business Support":["웍스경영지원","works business support","경영지원","works bs"],
+  "NAVER WORKS AI Studio":["웍스ai스튜디오","ai studio","works ai","웍스ai","naverworks ai"],
+};
+
+function searchProds(q){
+  if(!q.trim())return null;
+  const nq=q.trim().toLowerCase().replace(/\s+/g,"");
+  const m=new Set();
+  PRODS_LIST.forEach(c=>c.items.forEach(item=>{
+    if(item.toLowerCase().replace(/\s+/g,"").includes(nq)){m.add(item);return;}
+    if((PROD_ALIASES[item]||[]).some(a=>a.replace(/\s+/g,"").includes(nq)||nq.includes(a.replace(/\s+/g,"")))){m.add(item);}
+  }));
+  return m;
+}
+
+// ── BILLING_MAP (효율화: Server 패턴 통합) ───────────────
+const BILLING_MAP=[
+  [/^(server|ssd[\s.]?server|gpu[\s.]?server|virtual[\s.]?dedicated|bare[\s.]?metal|hpc)(\s*\(|$)?/i,"Server"],
+  [/block.?storage/i,"Block Storage"],
+  [/object.?storage|archive.?storage/i,"Object Storage"],
+  [/^nas(\s*\(|$)/i,"NAS"],[/^backup(\s*\(|$)/i,"Backup"],[/file.?storage/i,"File Storage"],
+  [/cloud.?functions/i,"Cloud Functions"],[/load.?balancer/i,"Load Balancer"],[/nat.?gateway/i,"NAT Gateway"],
+  [/global.?traffic.?manager|global.?route.?manager/i,"Global Traffic Manager"],
+  [/global.?cdn/i,"Global CDN"],[/global.?edge/i,"Global Edge"],
+  [/ipsec.?vpn|manage.?ipsec/i,"IPsec VPN"],[/ssl.?vpn/i,"SSL VPN"],[/cloud.?connect/i,"Cloud Connect"],
+  [/geolocation/i,"GeoLocation"],[/^maps?(\s*\(|$)/i,"Maps"],[/kubernetes|nks/i,"Kubernetes Service (NKS)"],
+  [/cloud.?db.?for.?mysql|cdb.*mysql/i,"Cloud DB for MySQL"],
+  [/cloud.?db.?for.?mssql|cdb.*mssql/i,"Cloud DB for MSSQL"],
+  [/cloud.?db.?for.?postgresql|cdb.*postgresql/i,"Cloud DB for PostgreSQL"],
+  [/cloud.?db.?for.?mongodb|cdb.*mongodb/i,"Cloud DB for MongoDB"],
+  [/cloud.?db.?for.?cache|cdb.*cache/i,"Cloud DB for Cache"],
+  [/cloud.?data.?streaming/i,"Cloud Data Streaming Service"],[/cloud.?hadoop/i,"Cloud Hadoop"],
+  [/api.?gateway/i,"API Gateway"],[/app.?safer/i,"App Safer"],
+  [/secure.?zone.?firewall/i,"Secure Zone Firewall"],[/security.?monitoring/i,"Security Monitoring"],
+  [/file.?safer/i,"File Safer"],[/private.?ca/i,"Private CA"],[/captcha/i,"CAPTCHA"],
+  [/key.?management/i,"Key Management Service"],[/webshell/i,"Webshell Behavior Detector"],
+  [/effective.?log|elsa/i,"Effective Log Search & Analytics"],
+  [/search.?engine.?service/i,"Search Engine Service"],[/cloud.?search/i,"Cloud Search"],
+  [/heaan/i,"HEaaN Homomorphic Analytics"],[/real.?user.?analytics|rua/i,"Real User Analytics"],
+  [/pinpoint.?cloud/i,"Pinpoint Cloud"],[/arc.?eye/i,"ARC eye"],
+  [/data.?catalog/i,"Data Catalog"],[/data.?flow/i,"Data Flow"],[/data.?forest/i,"Data Forest"],
+  [/data.?stream/i,"Data Stream"],[/data.?query/i,"Data Query"],
+  [/source.?build/i,"Source Build"],[/source.?commit/i,"Source Commit"],
+  [/source.?pipeline/i,"Source Pipeline"],[/sourceband/i,"SourceBand"],
+  [/cloud.?outbound.?mailer/i,"Cloud Outbound Mailer"],
+  [/simple.*notification|sens\b/i,"Simple & Easy Notification Service"],
+  [/gamepot|game.?report|game.?chat|^game(\s*\(|$)/i,"Game"],
+  [/live.?station/i,"Live Station"],[/vod.?station/i,"VOD Station"],[/vod.?transcoder/i,"VOD Transcoder"],
+  [/media.?connect.?center/i,"Media Connect Center"],[/media.?intelligence/i,"Media Intelligence"],
+  [/image.?optimizer/i,"Image Optimizer"],[/workbox/i,"WORKBOX"],[/ncloud.?chat/i,"Ncloud Chat"],
+  [/clova.?speech.?recognition/i,"CLOVA Speech Recognition"],
+  [/clova.?speech.?synthesis|clova.?premium.?voice|clova.?voice\b/i,"CLOVA Speech Synthesis"],
+  [/clova.?speech\b/i,"CLOVA Speech"],[/clova.?aicall/i,"CLOVA AiCall"],
+  [/clova.?chatbot/i,"CLOVA Chatbot"],[/clova.?dubbing/i,"CLOVA Dubbing"],
+  [/clova.?face.?recognition/i,"CLOVA Face Recognition"],[/clova.?facesign/i,"CLOVA FaceSign"],
+  [/clova.?ocr/i,"CLOVA OCR"],[/papago/i,"Papago Translation"],
+  [/pose.?estimation/i,"Ncloud Pose Estimation"],[/object.?detection/i,"Object Detection"],
+  [/aitems/i,"AiTEMS"],[/web.?service.?monitoring|wsms/i,"Web Service Monitoring System"],
+  [/naver.?works.?ai.?studio|works.?ai.?studio/i,"NAVER WORKS AI Studio"],
+  [/naver.?works.?clova.?note|works.?clova.?note|clovanote/i,"NAVER WORKS ClovaNote"],
+  [/works.?business.?support|웍스.*경영|works.?bs/i,"WORKS Business Support"],
+  [/works.?drive/i,"WORKS Drive"],
+  [/clova.?studio/i,"CLOVA Studio"],
+  [/^rag$/i,"RAG"],
+  [/naver.?works.?core|works.?core|웍스.*코어/i,"NAVER WORKS Core"],
+  [/^naver.?works$/i,"NAVER WORKS Core"],
+  [/vmware/i,"VMware on Ncloud"],
+];
+function matchProd(n){if(!n)return null;for(const[re,p]of BILLING_MAP)if(re.test(n.trim()))return p;return null;}
+
+const SKIP_RE=/^소계$|^합계$|^subtotal$|^total$|부가가치세|^vat$|위약금|환불|이용요금합계|청구합계|^세전$|^부가세$|월\s*전체\s*합계|상품\s*할인|코인\s*사용|100원\s*미만|실\s*청구\s*요금|^고객\s*할인$|납부\s*예상\s*요금$|^결제\s*요금$/i;
+const REGION_SET=new Set(["리전 공통","한국","일본","싱가포르","미국","독일","홍콩","한국(금융)","korea","japan","singapore","us","germany"]);
+function isRegion(s){return REGION_SET.has((s||"").trim())||REGION_SET.has((s||"").trim().toLowerCase());}
+function isSkip(s){if(!s||s.trim().length<2)return true;const bare=s.trim().replace(/^\[.*?\]\s*/,"");if(SKIP_RE.test(bare))return true;if(/^[\d,.\s\-₩]+$/.test(bare))return true;if(/^\d{4}[-./]\d{1,2}/.test(bare))return true;return false;}
+
+// 납부 예상요금 컬럼 키워드 (SLA 기준 금액)
+const PAY_COL_KEYS=["납부 예상요금","납부예상요금","납부 예상 요금","납부금액","예상납부","결제예정금액","결제금액","실납부","payment"];
+// 사용금액(gross) 컬럼 키워드
+const USE_COL_KEYS=["사용금액","이용요금","이용 요금","이용금액","usage","사용요금"];
+
+function parseNcpBilling(allRows){
+  let dataStart=0,colDetail=2,colPay=-1,colUse=-1,usedPayCol=false;
+  for(let i=0;i<Math.min(allRows.length,30);i++){
+    const raw=allRows[i].row.map(x=>String(x||"").trim());
+    const cL=raw.map(x=>x.toLowerCase());
+    const di=cL.findIndex(x=>x==="상세"||x==="상세항목"||x==="detail"||x==="과금항목 그룹"||x==="과금항목그룹");
+    const pi=cL.findIndex(x=>PAY_COL_KEYS.some(k=>x.includes(k.toLowerCase())));
+    const ui=cL.findIndex(x=>USE_COL_KEYS.some(k=>x.includes(k.toLowerCase())));
+    if(di>=0||cL.some(x=>x.includes("서비스")||x.includes("과금항목"))){
+      if(di>=0)colDetail=di;
+      if(pi>=0){colPay=pi;usedPayCol=true;}
+      if(ui>=0)colUse=ui;
+      if(colPay<0&&colUse>=0)colPay=colUse;
+      dataStart=i+1;break;
+    }
+  }
+  if(colPay<0)colPay=colUse>=0?colUse:4;
+  let curProd="",curRegion="";
+  const groups={},order=[];
+  for(let i=0;i<allRows.length;i++){
+    const c=allRows[i].row.map(x=>String(x||"").trim());
+    for(let ci=0;ci<Math.min(c.length,4);ci++){if(c[ci]&&isRegion(c[ci])){curRegion=c[ci];break;}}
+    for(let ci=0;ci<Math.min(colDetail,6);ci++){const v=c[ci]||"";if(!v||isRegion(v)||isSkip(v))continue;if(matchProd(v)){curProd=v;break;}}
+    if(i<dataStart)continue;if(!curProd)continue;
+    const detail=c[colDetail]||"";
+    if(!detail||isSkip(detail))continue;if(isRegion(detail))continue;
+    const payRaw=(c[colPay]||"").trim();
+    const payNum=Number(payRaw.replace(/[^0-9.\-]/g,""));
+    const payAmt=isNaN(payNum)?0:Math.max(0,payNum);
+    const useRaw=colUse>=0?(c[colUse]||"").trim():"";
+    const useNum=Number(useRaw.replace(/[^0-9.\-]/g,""));
+    const useAmt=isNaN(useNum)?0:Math.max(0,useNum);
+    if(!payRaw&&!useRaw)continue;
+    if(matchProd(detail)&&payAmt===0&&useAmt===0)continue;
+    const slaProd=matchProd(curProd);
+    if(!groups[curProd]){groups[curProd]={raw:curProd,slaProd,items:[],usedPayCol};order.push(curProd);}
+    groups[curProd].items.push({id:i,detail:curRegion?"["+curRegion+"] "+detail:detail,amount:payAmt,usageAmount:useAmt,selected:false});
+  }
+  return order.map(k=>groups[k]);
+}
+
+function monthMinutes(y,m){return new Date(y,m+1,0).getDate()*24*60;}
+
+function getRateFromUptime(u,tiers){
+  if(!tiers||!tiers.length)return 0;
+  for(const t of tiers)if(u>=t.from&&u<t.to)return t.rate;
+  if(u>=(tiers[tiers.length-1].to||100))return 0;
+  return tiers[tiers.length-1].rate;
+}
+
+function calcUptime(prod,downMin,y,m,ev){
+  ev=ev||{};const p=POLICIES[prod],total=monthMinutes(y,m),type=(p&&p.uptimeType)||"time";
+  if(type==="time"||type==="worksTime")return((total-downMin)/total)*100;
+  if(type==="errorRate"){const er=parseFloat(ev.avgErrorRate||"0");return(isNaN(er)||er<0)?((total-downMin)/total)*100:100-er;}
+  if(type==="backupCount"){const tb=+ev.totalBackups||0,fb=+ev.failedBackups||0;return tb>0?(1-fb/tb)*100:((total-downMin)/total)*100;}
+  if(type==="monitorCount"){const tm=+ev.totalMonitor||0,em=+ev.errorMonitor||0;return tm>0?(1-em/tm)*100:((total-downMin)/total)*100;}
+  if(type==="objectStorageErrorRate"){
+    const ec=+ev.errorCount||0,tr=+ev.totalRequests||0,dh=downMin/60;
+    // PDF 공식: 월평균오류율(%) = (장애시간(h) × (오류건수/총요청건수)) / 720 × 100
+    // 월가용률(%) = 100% − 월평균오류율
+    if(tr>0&&dh>0){const errRate=(dh*(ec/tr))/720*100;return Math.max(0,100-errRate);}
+    // 총요청건수 미입력 or 장애시간=0 → 장애시간 기반으로 fallback
+    return((total-downMin)/total)*100;
+  }
+  return((total-downMin)/total)*100;
+}
+
+function durStr(m){if(m<=0)return"-";const d=Math.floor(m/1440),h=Math.floor((m%1440)/60),mn=Math.round(m%60);return[d&&d+"일",h&&h+"시간",mn&&mn+"분"].filter(Boolean).join(" ");}
+
+// 효율화: splitByMonth에 음수 방어 추가
+function splitByMonth(s,e){
+  if(!s||!e)return[];const sd=new Date(s),ed=new Date(e);if(isNaN(sd)||isNaN(ed)||ed<=sd)return[];
+  const res=[];let cur=new Date(sd);
+  while(cur<ed){const nxt=new Date(cur.getFullYear(),cur.getMonth()+1,1);const end=nxt<ed?nxt:ed;res.push({year:cur.getFullYear(),month:cur.getMonth(),minutes:Math.max(0,(end-cur)/60000)});cur=nxt;}
+  return res;
+}
+
+function SlaPolicyPanel({prod,prodOpts}){
+  const p=POLICIES[prod];
+  const pol=getActivePolicy(prod,prodOpts);
+  const isCommon=pol.isCommon||false;
+  const{sla,tiers}=pol;
+  const disp=p||COMMON_SLA;
+  return(
+    <div style={{padding:"14px 16px",background:"#f8faff",fontSize:11,lineHeight:1.9}}>
+      {isCommon&&<div style={{padding:"7px 12px",background:"#fff3e0",border:"1px solid #ffcc02",borderRadius:7,color:"#e65100",marginBottom:10,fontWeight:600,fontSize:11}}>
+        ⚠ 이 상품의 개별 SLA 정책을 찾지 못했습니다. NCP 공통 SLA(99.9%)를 참고용으로 표시합니다. 반드시 공식 원문을 확인하세요.
+      </div>}
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+        <span style={{background:isCommon?"#e65100":"#1565c0",color:"#fff",borderRadius:5,padding:"2px 10px",fontWeight:700,fontSize:12}}>{"SLA "+sla+"%"}</span>
+        {!isCommon&&disp.effectiveDate&&<span style={{background:"#e8f0fe",color:"#1565c0",borderRadius:5,padding:"2px 10px"}}>{"효력일 "+disp.effectiveDate}</span>}
+        {isCommon&&<span style={{background:"#fce4ec",color:"#c62828",borderRadius:5,padding:"2px 8px",fontSize:10}}>공통 SLA 적용</span>}
+        {disp.uptimeType==="errorRate"  &&<span style={{background:"#fce4ec",color:"#c62828",borderRadius:5,padding:"2px 10px"}}>오류율 기반</span>}
+        {disp.uptimeType==="backupCount"&&<span style={{background:"#fce4ec",color:"#c62828",borderRadius:5,padding:"2px 10px"}}>백업건수 기반</span>}
+        {disp.uptimeType==="monitorCount"&&<span style={{background:"#fce4ec",color:"#c62828",borderRadius:5,padding:"2px 10px"}}>모니터링건수 기반</span>}
+        {(disp.uptimeType==="time"||disp.uptimeType==="worksTime")&&<span style={{background:"#e8f5e9",color:"#2e7d32",borderRadius:5,padding:"2px 10px"}}>장애시간 기반</span>}
+      </div>
+      {disp.slaNote&&<div style={{padding:"6px 10px",background:"#fff8e1",border:"1px solid #ffe082",borderRadius:6,color:"#b36200",marginBottom:10}}>{disp.slaNote}</div>}
+      {disp.detail&&<div style={{marginBottom:12}}>
+        <div style={{fontWeight:700,color:"#1a237e",marginBottom:5,fontSize:12}}>가용률 산정 방식</div>
+        <pre style={{margin:0,fontFamily:"inherit",fontSize:11,background:"#eef2ff",padding:"10px 12px",borderRadius:8,whiteSpace:"pre-wrap",lineHeight:1.8,color:"#333",border:"1px solid #c5cae9"}}>{disp.detail}</pre>
+      </div>}
+      {tiers.length>0
+        ?<div style={{marginBottom:12}}>
+          <div style={{fontWeight:700,color:"#1a237e",marginBottom:5,fontSize:12}}>보상 구간</div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+            <thead><tr style={{background:"#e8f0fe"}}>
+              <th style={{padding:"5px 10px",textAlign:"left", border:"1px solid #c5d8f7",fontWeight:600}}>월 가용률 구간</th>
+              <th style={{padding:"5px 10px",textAlign:"right",border:"1px solid #c5d8f7",fontWeight:600}}>서비스 크레딧</th>
+            </tr></thead>
+            <tbody>
+              <tr style={{background:"#f0fdf4"}}><td style={{padding:"5px 10px",border:"1px solid #c5d8f7",color:"#2e7d32"}}>{sla+"% 이상"}</td><td style={{padding:"5px 10px",border:"1px solid #c5d8f7",textAlign:"right",color:"#2e7d32",fontWeight:600}}>보상 없음</td></tr>
+              {tiers.map((t,i)=><tr key={i} style={{background:i%2===0?"#fff":"#f8faff"}}><td style={{padding:"5px 10px",border:"1px solid #c5d8f7"}}>{t.desc}</td><td style={{padding:"5px 10px",border:"1px solid #c5d8f7",textAlign:"right",color:rCol(t.rate),fontWeight:700}}>{Math.round(t.rate*100)+"%"}</td></tr>)}
+            </tbody>
+          </table>
+        </div>
+        :<div style={{padding:"6px 10px",background:"#ffebee",borderRadius:6,color:"#c62828",marginBottom:12}}>현재 선택된 구성은 SLA 보상 대상이 아닙니다.</div>
+      }
+      {disp.excludes&&disp.excludes.length>0&&<div style={{marginBottom:10}}>
+        <div style={{fontWeight:700,color:"#1a237e",marginBottom:5,fontSize:12}}>SLA 적용 제외 사유</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:4}}>{disp.excludes.map((e,i)=><span key={i} style={{fontSize:10,background:"#f5f5f5",border:"1px solid #e0e0e0",borderRadius:4,padding:"2px 8px",color:"#555"}}>{e}</span>)}</div>
+      </div>}
+      <div style={{textAlign:"right",marginTop:8}}>
+        {(()=>{const isNwProd=typeof NW_PRODS!=="undefined"&&NW_PRODS.includes(prod);const url=isNwProd?NW_SLA_URL:SLA_URL;const label=isNwProd?"NAVER WORKS 공식 SLA 원문":"공식 SLA 원문";return(<a href={url} target="_blank" rel="noreferrer" style={{fontSize:11,color:"#1565c0",fontWeight:600,textDecoration:"none",padding:"5px 12px",border:"1.5px solid #1565c0",borderRadius:6,display:"inline-block"}}>{label}</a>);})()}
+      </div>
+    </div>
+  );
+}
+
+function MiniCalendar({value,onChange,minDate,accent}){
+  accent=accent||"#1565c0";
+  const today=new Date();
+  const safe=v=>v&&v.includes("T")?v:"";
+  const initD=(safe(value)||today.getFullYear()+"-"+pad2(today.getMonth()+1)+"-"+pad2(today.getDate())+"T00:00:00").split("T")[0];
+  const initT=safe(value)?value.split("T")[1].slice(0,5):"00:00";
+  const[cy,setCy]=useState(+initD.split("-")[0]);
+  const[cm,setCm]=useState(+initD.split("-")[1]-1);
+  const[selDate,setSelDate]=useState(initD);
+  const[hh,setHh]=useState(initT.split(":")[0]);
+  const[mm,setMm]=useState(initT.split(":")[1]);
+  useEffect(()=>{
+    if(!safe(value))return;
+    const d=value.split("T")[0],t=value.split("T")[1].slice(0,5);
+    setSelDate(d);setCy(+d.split("-")[0]);setCm(+d.split("-")[1]-1);
+    setHh(t.split(":")[0]);setMm(t.split(":")[1]);
+  },[value]);
+  const nav=d=>{let y=cy,m=cm+d;if(m<0){m=11;y--;}else if(m>11){m=0;y++;}setCy(y);setCm(m);};
+  const ds=d=>cy+"-"+pad2(cm+1)+"-"+pad2(d);
+  const todStr=today.getFullYear()+"-"+pad2(today.getMonth()+1)+"-"+pad2(today.getDate());
+  const minStr=minDate?minDate.split("T")[0]:"";
+  const first=new Date(cy,cm,1).getDay(),days=new Date(cy,cm+1,0).getDate();
+  function emit(date,h,m){onChange(date+"T"+pad2(+h)+":"+pad2(+m)+":00");}
+  // 입력 중에는 raw 문자열 유지, blur/step에서만 정규화
+  function handleHH(v){const raw=v.replace(/[^0-9]/g,"").slice(0,2);setHh(raw);}
+  function handleMM(v){const raw=v.replace(/[^0-9]/g,"").slice(0,2);setMm(raw);}
+  function commitHH(v){const n=Math.min(23,+v||0);const p=pad2(n);setHh(p);emit(selDate,n,mm);}
+  function commitMM(v){const n=Math.min(59,+v||0);const p=pad2(n);setMm(p);emit(selDate,hh,n);}
+  function stepTime(type,delta){
+    if(type==="h"){const n=(Math.min(23,+hh||0)+delta+24)%24;setHh(pad2(n));emit(selDate,n,+mm||0);}
+    else{const n=(Math.min(59,+mm||0)+delta+60)%60;setMm(pad2(n));emit(selDate,+hh||0,n);}
+  }
+  const bS={background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:13,padding:"2px 6px",lineHeight:1,fontWeight:700};
+  const iS={width:38,textAlign:"center",border:"1.5px solid #1565c0",borderRadius:6,fontSize:16,fontWeight:700,padding:"5px 0",fontFamily:"monospace",outline:"none",color:"#1a237e",background:"#f0f4ff"};
+  return(
+    <div style={{background:"#fff",border:"1px solid #ddd",borderRadius:10,padding:10,minWidth:220,boxShadow:"0 4px 16px rgba(0,0,0,.18)",zIndex:200}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+        <button onClick={()=>nav(-1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:18,padding:"0 8px"}}>‹</button>
+        <span style={{fontSize:13,fontWeight:700}}>{cy+"년 "+(cm+1)+"월"}</span>
+        <button onClick={()=>nav(1)} style={{background:"none",border:"none",cursor:"pointer",fontSize:18,padding:"0 8px"}}>›</button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,marginBottom:10}}>
+        {["일","월","화","수","목","금","토"].map(d=><div key={d} style={{textAlign:"center",fontSize:10,color:"#aaa",padding:"2px 0",fontWeight:600}}>{d}</div>)}
+        {Array(first).fill(null).map((_,i)=><div key={"b"+i}/>)}
+        {Array.from({length:days},(_,i)=>i+1).map(d=>{
+          const s=ds(d),isSel=s===selDate,isTod=s===todStr,dis=!!(minStr&&s<minStr);
+          return(<button key={d} disabled={dis} onClick={()=>{setSelDate(s);emit(s,hh,mm);}}
+            style={{padding:"5px 0",fontSize:12,borderRadius:5,border:"none",
+              background:isSel?accent:"transparent",color:isSel?"#fff":dis?"#ccc":isTod?accent:"#333",
+              fontWeight:(isSel||isTod)?700:400,cursor:dis?"default":"pointer",width:"100%"}}>{d}</button>);
+        })}
+      </div>
+      <div style={{borderTop:"1px solid #f0f0f0",paddingTop:10}}>
+        <div style={{fontSize:11,color:"#1565c0",textAlign:"center",marginBottom:8,fontWeight:700}}>시간 설정 <span style={{fontSize:9,color:"#aaa",fontWeight:400}}>(위아래 키 또는 버튼)</span></div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+            <button onClick={()=>stepTime("h",1)} style={bS}>[+]</button>
+            <input value={hh}
+              onChange={e=>handleHH(e.target.value)}
+              onBlur={e=>commitHH(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter"||e.key==="Tab")commitHH(e.target.value);if(e.key==="ArrowUp"){e.preventDefault();stepTime("h",1);}if(e.key==="ArrowDown"){e.preventDefault();stepTime("h",-1);}}}
+              style={iS} maxLength={2} inputMode="numeric" placeholder="00"/>
+            <button onClick={()=>stepTime("h",-1)} style={bS}>[-]</button>
+            <div style={{fontSize:10,color:"#888",marginTop:1}}>시</div>
+          </div>
+          <span style={{fontSize:22,fontWeight:700,color:"#1a237e",marginBottom:16}}>:</span>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+            <button onClick={()=>stepTime("m",1)} style={bS}>[+]</button>
+            <input value={mm}
+              onChange={e=>handleMM(e.target.value)}
+              onBlur={e=>commitMM(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter"||e.key==="Tab")commitMM(e.target.value);if(e.key==="ArrowUp"){e.preventDefault();stepTime("m",1);}if(e.key==="ArrowDown"){e.preventDefault();stepTime("m",-1);}}}
+              style={iS} maxLength={2} inputMode="numeric" placeholder="00"/>
+            <button onClick={()=>stepTime("m",-1)} style={bS}>[-]</button>
+            <div style={{fontSize:10,color:"#888",marginTop:1}}>분</div>
+          </div>
+        </div>
+        <div style={{marginTop:10,borderTop:"1px solid #f0f0f0",paddingTop:8}}>
+          <div style={{fontSize:9,color:"#aaa",textAlign:"center",marginBottom:5}}>분 빠른 선택</div>
+          <div style={{display:"flex",gap:3,justifyContent:"center"}}>
+            {["00","15","30","45"].map(m=>(
+              <button key={m} onClick={()=>{setMm(m);emit(selDate,+hh||0,+m);}}
+                style={{fontSize:11,padding:"4px 0",borderRadius:6,border:"1.5px solid "+(mm===m?accent:"#e0e0e0"),
+                  background:mm===m?accent:"#f5f7fa",color:mm===m?"#fff":"#555",cursor:"pointer",fontWeight:700,width:36}}>:{m}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DateTimePicker({label,value,onChange,minDate,accent,onTabNext}){
+  accent=accent||"#1565c0";
+  const[text,setText]=useState("");
+  const[showCal,setShowCal]=useState(false);
+  const calUsed=useRef(false);
+  const ref=useRef(),timer=useRef();
+  useEffect(()=>{const h=e=>{if(ref.current&&!ref.current.contains(e.target))setShowCal(false);};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
+  const isFocused=useRef(false);
+  useEffect(()=>{
+    if(!value||!calUsed.current)return;
+    // 달력에서 선택했을 때만 text 동기화 (타이핑/붙여넣기 중에는 스킵)
+    if(isFocused.current)return;
+    const d=value.split("T")[0],t=(value.split("T")[1]||"").slice(0,5)||"00:00";
+    setText(d+" "+t);
+  },[value]);
+  function parseDT(v){
+    v=v.trim().replace(/\./g,"-").replace(/\s+/g," ");
+    let m=v.match(/^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2})$/);if(m)return m[1]+"-"+pad2(+m[2])+"-"+pad2(+m[3])+"T"+pad2(+m[4])+":"+pad2(+m[5])+":00";
+    m=v.match(/^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2})$/);if(m)return m[1]+"-"+pad2(+m[2])+"-"+pad2(+m[3])+"T"+pad2(+m[4])+":00:00";
+    m=v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);if(m)return m[1]+"-"+pad2(+m[2])+"-"+pad2(+m[3])+"T00:00:00";
+    m=v.replace(/ /g,"").match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/);if(m)return m[1]+"-"+m[2]+"-"+m[3]+"T"+m[4]+":"+m[5]+":00";
+    m=v.match(/^(\d{4})(\d{2})(\d{2})$/);if(m)return m[1]+"-"+m[2]+"-"+m[3]+"T00:00:00";
+    return null;
+  }
+  function commit(v){const p=parseDT(v);if(p&&!isNaN(new Date(p)))onChange(p);}
+  function handleChange(v){setText(v);clearTimeout(timer.current);timer.current=setTimeout(()=>commit(v),700);}
+  function handleKeyDown(e){
+    if(e.key==="Tab"){setShowCal(false);clearTimeout(timer.current);commit(text);if(onTabNext){e.preventDefault();onTabNext();}}
+    if(e.key==="Enter"){setShowCal(false);clearTimeout(timer.current);commit(text);}
+    if(e.key==="Escape")setShowCal(false);
+  }
+  const parsed=parseDT(text);const isValid=!!(parsed&&!isNaN(new Date(parsed)));const showErr=text.length>6&&!parsed;
+  return(
+    <div style={{flex:1}} ref={ref}>
+      <div style={{fontSize:11,fontWeight:700,color:"#444",marginBottom:4}}>{label}</div>
+      <div style={{position:"relative"}}>
+        <input value={text}
+          onChange={e=>handleChange(e.target.value)}
+          onFocus={()=>{isFocused.current=true;setShowCal(true);}}
+          onBlur={()=>{isFocused.current=false;clearTimeout(timer.current);commit(text);}}
+          onPaste={e=>{
+            const pasted=e.clipboardData.getData("text");
+            setTimeout(()=>{const p=parseDT(pasted.trim());if(p&&!isNaN(new Date(p))){calUsed.current=false;setText(pasted.trim());commit(pasted.trim());}},0);
+          }}
+          onKeyDown={handleKeyDown} placeholder="2026-03-08 14:30"
+          style={{width:"100%",padding:"9px 36px 9px 10px",border:"2px solid "+(showCal?accent:showErr?"#e53935":isValid?"#a5d6a7":"#ddd"),borderRadius:8,fontSize:13,boxSizing:"border-box",outline:"none",fontFamily:"monospace"}}/>
+        <span onClick={()=>setShowCal(v=>!v)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",cursor:"pointer",fontSize:14,color:"#888",userSelect:"none"}}>CAL</span>
+        {showCal&&<div style={{position:"absolute",top:"calc(100% + 4px)",left:0,zIndex:300}}>
+          <MiniCalendar value={value} onChange={v=>{calUsed.current=true;onChange(v);const d=v.split("T")[0],t=(v.split("T")[1]||"").slice(0,5)||"00:00";setText(d+" "+t);setShowCal(false);}} minDate={minDate} accent={accent}/>
+        </div>}
+      </div>
+      <div style={{fontSize:10,marginTop:3,color:showErr?"#e53935":isValid?accent:"#bbb"}}>{showErr?"⚠ 형식 오류":isValid?"✓ "+parsed.replace("T"," ").slice(0,16):"날짜만 입력 시 00:00 적용 · 예) 2026-03-08 14:30"}</div>
+    </div>
+  );
+}
+
+function Step1({selProds,setSelProds,prodOpts,setProdOpts,extraVals,setExtraVals}){
+  const[expandCat,setExpandCat]=useState({});
+  const[searchQ,setSearchQ]=useState("");
+  const toggle=item=>setSelProds(prev=>prev.includes(item)?prev.filter(p=>p!==item):[...prev,item]);
+  const sr=searchProds(searchQ);
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      <div style={{background:"#fff",borderRadius:12,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <div><div style={{fontWeight:700,fontSize:14,color:"#1565c0"}}>장애 상품 선택</div><div style={{fontSize:11,color:"#888",marginTop:2}}>장애가 발생한 상품을 선택하세요. 목록에 없는 상품은 검색 후 추가할 수 있습니다.</div></div>
+          {selProds.length>0&&<button onClick={()=>setSelProds([])} style={{fontSize:11,color:"#e53935",background:"#ffebee",border:"none",borderRadius:6,padding:"3px 10px",cursor:"pointer"}}>전체 해제</button>}
+        </div>
+        <div style={{position:"relative",marginBottom:12}}>
+          <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",fontSize:14,color:"#aaa",pointerEvents:"none"}}></span>
+          <input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="상품명 또는 유사어 검색  예) 하둡, redis, sms, k8s..."
+            style={{width:"100%",padding:"9px 36px 9px 34px",border:"1.5px solid "+(searchQ?"#1565c0":"#e0e0e0"),borderRadius:8,fontSize:12,boxSizing:"border-box",outline:"none",background:"#f8faff"}}/>
+          {searchQ&&<button onClick={()=>setSearchQ("")} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:14,color:"#aaa",padding:0}}>X</button>}
+        </div>
+        {sr&&<div style={{marginBottom:8,padding:"6px 10px",background:sr.size>0?"#e8f0fe":"#f5f5f5",borderRadius:6,fontSize:11,color:sr.size>0?"#1565c0":"#555",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
+          {sr.size>0
+            ?`"${searchQ}" 검색 결과 ${sr.size}개`
+            :<>
+              <span style={{color:"#888"}}>{`"${searchQ}" 검색 결과 없음 — 공통 SLA로 추가할 수 있습니다`}</span>
+              <button onClick={()=>{
+                const name=searchQ.trim();
+                if(!name)return;
+                if(!selProds.includes(name))setSelProds(prev=>[...prev,name]);
+                setSearchQ("");
+              }} style={{fontSize:10,padding:"2px 10px",borderRadius:5,border:"1px solid #bbb",background:"#fff",color:"#555",cursor:"pointer",whiteSpace:"nowrap"}}>
+                + 공통 SLA로 추가
+              </button>
+            </>
+          }
+        </div>}
+        {selProds.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:12,padding:"8px 10px",background:"#e3f2fd",borderRadius:8}}>
+          <span style={{fontSize:11,color:"#1565c0",fontWeight:700,alignSelf:"center"}}>{"선택 "+selProds.length+"개"}</span>
+          {selProds.map(p=>{const hasPolicy=!!POLICIES[p];return(<span key={p} onClick={()=>toggle(p)} style={{fontSize:11,background:"#1565c0",color:"#fff",borderRadius:14,padding:"3px 10px",cursor:"pointer",display:"flex",alignItems:"center",gap:3,flexWrap:"nowrap"}}>
+            {p}
+            {!hasPolicy&&<span style={{fontSize:8,background:"rgba(255,255,255,.25)",borderRadius:2,padding:"0 3px",marginLeft:2}}>공통</span>}
+            <span style={{fontWeight:700,opacity:0.8}}>x</span>
+          </span>);})}'  
+        </div>}
+        {PRODS_LIST.map(cat=>{
+          const vis=cat.items.filter(i=>!sr||sr.has(i));if(!vis.length)return null;
+          const isOpen=sr?true:expandCat[cat.cat]!==false;
+          const selCnt=cat.items.filter(i=>selProds.includes(i)).length;
+          return(
+            <div key={cat.cat} style={{marginBottom:8}}>
+              <div onClick={()=>setExpandCat(p=>({...p,[cat.cat]:!isOpen}))} style={{fontSize:11,fontWeight:700,color:"#444",cursor:"pointer",display:"flex",alignItems:"center",gap:4,userSelect:"none",padding:"3px 0",marginBottom:isOpen?5:0}}>
+                <span style={{fontSize:10,color:"#bbb"}}>{isOpen?"▼":"▶"}</span>{cat.cat}
+                <span style={{color:selCnt>0?"#1565c0":"#bbb",fontWeight:selCnt>0?700:400,fontSize:10}}>{"("+selCnt+"/"+cat.items.length+")"}</span>
+              </div>
+              {isOpen&&<div style={{display:"flex",flexWrap:"wrap",gap:5}}>{vis.map(item=>{
+                const sel=selProds.includes(item);const needsOpt=POLICIES[item]&&POLICIES[item].options&&Object.keys(POLICIES[item].options).length>0;const isCommonSla=!POLICIES[item];
+                return(<button key={item} onClick={()=>toggle(item)} style={{padding:"5px 11px",borderRadius:16,border:"1.5px solid "+(sel?"#1565c0":"#e0e0e0"),background:sel?"#1565c0":"#fff",color:sel?"#fff":"#444",fontSize:11,cursor:"pointer",fontWeight:sel?600:400,display:"flex",alignItems:"center",gap:3}}>
+                  {sel&&<span style={{fontSize:10}}>✓</span>}{item}{needsOpt&&<span style={{fontSize:9,opacity:0.7}}>⚙</span>}{isCommonSla&&<span style={{fontSize:9,background:"#fff3e0",color:"#e65100",borderRadius:3,padding:"0px 4px",marginLeft:3,border:"1px solid #ffcc02"}}>공통SLA</span>}
+                </button>);
+              })}</div>}
+            </div>
+          );
+        })}
+      </div>
+      {selProds.length>0&&<div style={{background:"#fff",borderRadius:12,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+        <div style={{fontWeight:700,fontSize:14,color:"#1565c0",marginBottom:10}}>상품별 설정</div>
+        {selProds.map(prod=>{
+          const p=POLICIES[prod];const hasOpts=p&&p.options&&Object.keys(p.options).length>0;const hasExtra=p&&p.extraInputs&&p.extraInputs.length>0;const ev=extraVals[prod]||{};
+          return(
+            <div key={prod} style={{marginBottom:12,padding:12,border:"1.5px solid "+(hasOpts?"#ffe082":"#e8f0fe"),borderRadius:10,background:hasOpts?"#fffde7":"#fafbff"}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:(hasOpts||hasExtra)?10:0}}>
+                <span style={{fontWeight:700,fontSize:12,color:"#1565c0"}}>{prod}</span>
+                <span style={{fontSize:10,background:"#e8f5e9",color:"#2e7d32",borderRadius:3,padding:"1px 5px"}}>{"SLA "+getActiveSla(prod,prodOpts)+"%"}</span>
+                {p&&p.effectiveDate&&<span style={{fontSize:10,color:"#aaa"}}>{"효력 "+p.effectiveDate}</span>}
+                {p&&isFutureDate(p.effectiveDate)&&<span style={{fontSize:10,color:"#c62828",background:"#ffebee",borderRadius:3,padding:"1px 6px",fontWeight:600}}>⚠ SLA 미발효</span>}
+              </div>
+              {hasOpts&&Object.entries(p.options).map(([key,opt])=>{
+                const chosen=(prodOpts[prod]&&prodOpts[prod][key])||opt.defaultVal;
+                return(<div key={key} style={{marginBottom:8}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#b36200",marginBottom:6}}>{"⚙ "+opt.label}<span style={{color:"#e53935",fontSize:10,marginLeft:4}}>*필수</span></div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                    {Object.entries(opt.choices).map(([v,c])=><button key={v} onClick={()=>setProdOpts(prev=>({...prev,[prod]:{...(prev[prod]||{}),[key]:v}}))}
+                      style={{padding:"6px 14px",borderRadius:8,border:"1.5px solid "+(chosen===v?"#1565c0":"#ddd"),background:chosen===v?"#1565c0":"#fff",color:chosen===v?"#fff":"#555",fontSize:12,cursor:"pointer",fontWeight:chosen===v?700:400}}>
+                      {c.label+(c.sla?" ("+c.sla+"%)":"")}
+                    </button>)}
+                  </div>
+                </div>);
+              })}
+              {hasExtra&&<div style={{padding:"8px 10px",background:"#f3e5f5",border:"1px solid #ce93d8",borderRadius:8}}>
+                <div style={{fontSize:11,color:"#6a1b9a",fontWeight:600,marginBottom:6}}>📝 추가 정보 입력</div>
+                {p.extraInputs.map(inp=><div key={inp.key} style={{marginBottom:8}}>
+                  <label style={{fontSize:11,color:"#555",display:"block",marginBottom:2}}>{inp.label}</label>
+                  {inp.helpText&&<div style={{fontSize:10,color:"#c62828",background:"#ffebee",borderRadius:4,padding:"3px 7px",marginBottom:4}}>{inp.helpText}</div>}
+                  <input type="number" step={inp.type==="float"?"0.001":"1"} min="0" value={ev[inp.key]||""} placeholder={inp.placeholder}
+                    onChange={e=>setExtraVals(prev=>({...prev,[prod]:{...(prev[prod]||{}),[inp.key]:e.target.value}}))}
+                    style={{width:"100%",padding:"6px 8px",border:"1px solid #ce93d8",borderRadius:6,fontSize:12,boxSizing:"border-box"}}/>
+                </div>)}
+              </div>}
+            </div>
+          );
+        })}
+      </div>}
+    </div>
+  );
+}
+
+function SlaResultBadge({prod,prodOpts,extraVals,monthSegs}){
+  const pol=getActivePolicy(prod,prodOpts);const{sla,tiers}=pol;const isCommon=pol.isCommon||false;
+  if(!monthSegs||!monthSegs.length)return null;
+  return(
+    <div style={{marginBottom:8}}>
+      {monthSegs.map((seg,si)=>{
+        const ev=extraVals[prod]||{};const uptime=calcUptime(prod,seg.minutes,seg.year,seg.month,ev);const rate=getRateFromUptime(uptime,tiers);
+        const tierDesc=tiers.find(t=>uptime>=t.from&&uptime<t.to);const rc=rCol(rate);
+        const rateBg=rate>=0.5?"#fff5f5":rate>=0.25?"#fff8f0":rate>0?"#eff6ff":"#f0fdf4";
+        const rateBorder=rate>=0.5?"#fecaca":rate>=0.25?"#fed7aa":rate>0?"#bfdbfe":"#bbf7d0";
+        return(
+          <div key={si} style={{border:"2px solid "+rateBorder,borderRadius:12,background:rateBg,overflow:"hidden",marginBottom:si<monthSegs.length-1?6:0}}>
+            <div style={{padding:"8px 14px",background:rc,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{color:"#fff",fontWeight:700,fontSize:13}}>{prod}{isCommon&&<span style={{fontSize:9,background:"rgba(255,255,255,.25)",borderRadius:3,padding:"1px 5px",marginLeft:6}}>공통SLA</span>}</span>
+              <span style={{color:"#fff",fontSize:11,opacity:0.9}}>{seg.year+"년 "+(seg.month+1)+"월 · 장애 "+durStr(seg.minutes)}</span>
+            </div>
+            <div style={{padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <div style={{textAlign:"center",minWidth:80}}>
+                <div style={{fontSize:10,color:"#666",marginBottom:2}}>실제 가동률</div>
+                <div style={{fontSize:22,fontWeight:800,color:rc,lineHeight:1}}>{uptime.toFixed(3)+"%"}</div>
+                <div style={{fontSize:9,color:"#aaa",marginTop:2}}>{"SLA 기준 "+sla+"%"}</div>
+              </div>
+              <div style={{fontSize:20,color:"#ddd"}}>&gt;</div>
+              {rate>0
+                ?<div style={{flex:1}}><div style={{background:"#fff",borderRadius:8,padding:"8px 12px",border:"2px solid "+rateBorder,display:"inline-block"}}>
+                  <div style={{fontSize:10,color:"#888",marginBottom:1}}>월 청구금액의</div>
+                  <div style={{fontSize:30,fontWeight:900,color:rc,lineHeight:1}}>{Math.round(rate*100)+"%"}</div>
+                  <div style={{fontSize:9,color:"#888",marginTop:1}}>{tierDesc?tierDesc.desc:""}</div>
+                </div></div>
+                :<div style={{flex:1}}><div style={{background:"#fff",borderRadius:8,padding:"8px 12px",border:"2px solid #bbf7d0",display:"inline-block"}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#2e7d32"}}>✅ SLA 기준 충족</div>
+                  <div style={{fontSize:10,color:"#666",marginTop:1}}>보상 해당 없음</div>
+                </div></div>
+              }
+            </div>
+            {tiers.length>0&&<div style={{padding:"0 14px 10px",display:"flex",gap:3,flexWrap:"wrap"}}>{tiers.map((t,ti)=>{const isActive=uptime>=t.from&&uptime<t.to;return(
+              <div key={ti} style={{flex:1,minWidth:70,padding:"5px 6px",borderRadius:6,background:isActive?rc:"#f0f0f0",border:"1.5px solid "+(isActive?rc:"#e0e0e0"),textAlign:"center"}}>
+                <div style={{fontSize:8,color:isActive?"rgba(255,255,255,.8)":"#aaa",marginBottom:1}}>{t.desc}</div>
+                <div style={{fontSize:13,fontWeight:800,color:isActive?"#fff":"#bbb"}}>{Math.round(t.rate*100)+"%"}</div>
+                {isActive&&<div style={{fontSize:7,color:"rgba(255,255,255,.9)",marginTop:1}}>▲ 현재</div>}
+              </div>
+            );})}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Step2({selProds,prodOpts,extraVals,startDt,setStartDt,endDt,setEndDt,monthSegs}){
+  const endRef=useRef();const[openSla,setOpenSla]=useState({});
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      <div style={{background:"#fff",borderRadius:12,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+        <div style={{fontWeight:700,fontSize:14,color:"#1565c0",marginBottom:4}}>장애 기간 입력</div>
+        <div style={{fontSize:11,color:"#888",marginBottom:14}}>날짜와 시간을 직접 입력하거나 📅 달력을 이용하세요</div>
+        <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:14}}>
+          <DateTimePicker label="🔴 장애 발생 시작" value={startDt} onChange={setStartDt} accent="#c62828"
+            onTabNext={()=>{if(endRef.current){const inp=endRef.current.querySelector("input");if(inp)inp.focus();}}}/>
+          <div style={{alignSelf:"center",paddingTop:20,fontSize:20,color:"#bbb"}}>&gt;</div>
+          <div ref={endRef} style={{flex:1}}><DateTimePicker label="🟢 장애 종료" value={endDt} onChange={setEndDt} minDate={startDt} accent="#2e7d32"/></div>
+        </div>
+        {monthSegs.length>0&&<div style={{padding:"8px 14px",background:"#e3f2fd",borderRadius:8,display:"flex",gap:14,flexWrap:"wrap"}}>
+          <span style={{fontSize:12}}>총 장애시간: <b>{durStr(monthSegs.reduce((s,m)=>s+m.minutes,0))}</b></span>
+          <span style={{fontSize:12}}>영향 월: <b>{monthSegs.length+"개월"}</b></span>
+          {monthSegs.length>1&&<span style={{fontSize:11,color:"#e65100"}}>{"⚠ "+monthSegs.length+"개월에 걸쳐 월별 개별 계산됩니다"}</span>}
+        </div>}
+      </div>
+      {monthSegs.length>0&&selProds.length>0&&<div style={{background:"#fff",borderRadius:12,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+        <div style={{fontWeight:700,fontSize:14,color:"#1a237e",marginBottom:12}}>📊 SLA 보상 구간 분석</div>
+        {selProds.map(prod=>(
+          <div key={prod} style={{marginBottom:12}}>
+            <SlaResultBadge prod={prod} prodOpts={prodOpts} extraVals={extraVals} monthSegs={monthSegs}/>
+            <button onClick={()=>setOpenSla(p=>({...p,[prod]:!p[prod]}))} style={{width:"100%",marginTop:4,display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 12px",background:openSla[prod]?"#e8f0fe":"#f5f7fa",border:"1px solid "+(openSla[prod]?"#1565c0":"#e0e0e0"),borderRadius:openSla[prod]?"6px 6px 0 0":"6px",cursor:"pointer",fontSize:11,color:openSla[prod]?"#1565c0":"#666"}}>
+              <span style={{fontWeight:600}}>{"📋 "+prod+" SLA 정책 상세 보기"}</span>
+              <span style={{display:"inline-block",transform:openSla[prod]?"rotate(180deg)":"none"}}>▼</span>
+            </button>
+            {openSla[prod]&&<div style={{border:"1px solid #1565c0",borderTop:"none",borderRadius:"0 0 6px 6px",overflow:"hidden"}}><SlaPolicyPanel prod={prod} prodOpts={prodOpts}/></div>}
+          </div>
+        ))}
+      </div>}
+    </div>
+  );
+}
+
+function MonthUploader({label,selProds,groupsRef}){
+  const[groups,setGroups]=useState(null);const[busy,setBusy]=useState(false);const[err,setErr]=useState("");
+  const[fileName,setFileName]=useState("");const[showAll,setShowAll]=useState(false);
+  const fileRef=useRef();const xlsxLoaded=useRef(!!window.XLSX);
+  groupsRef.current=groups;
+  useEffect(()=>{if(window.XLSX){xlsxLoaded.current=true;return;}const sc=document.createElement("script");sc.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";sc.onload=()=>{xlsxLoaded.current=true;};document.head.appendChild(sc);},[]);
+  async function handleFile(file){
+    if(!file)return;if(!xlsxLoaded.current){setErr("XLSX 로딩 중.");return;}
+    if(!/\.xlsx?$/i.test(file.name)){setErr("xlsx/xls만 가능합니다.");return;}
+    setErr("");setBusy(true);setFileName(file.name);setGroups(null);setShowAll(false);
+    try{
+      const ab=await file.arrayBuffer();const wb=window.XLSX.read(new Uint8Array(ab),{type:"array",cellDates:false});
+      const allRows=[];
+      wb.SheetNames.forEach(sn=>{const ws=wb.Sheets[sn];if(!ws)return;
+        (ws["!merges"]||[]).forEach(mg=>{const bc=ws[window.XLSX.utils.encode_cell({r:mg.s.r,c:mg.s.c})];if(!bc)return;for(let r=mg.s.r;r<=mg.e.r;r++)for(let c=mg.s.c;c<=mg.e.c;c++){const a=window.XLSX.utils.encode_cell({r,c});if(!ws[a])ws[a]={t:bc.t,v:bc.v,w:bc.w||String(bc.v||"")};}});
+        const rows=window.XLSX.utils.sheet_to_json(ws,{header:1,defval:"",raw:false})||[];
+        rows.forEach(row=>{if(row.some(c=>String(c||"").trim()))allRows.push({row,sheet:sn});});});
+      const parsed=parseNcpBilling(allRows);
+      if(!parsed.length){setErr("항목을 찾을 수 없습니다.");setBusy(false);return;}
+      setGroups(parsed.map(g=>({...g,items:g.items.map(it=>({...it,selected:!!(g.slaProd&&selProds.includes(g.slaProd))}))})));
+    }catch(e){setErr("파싱 실패: "+e.message);}
+    setBusy(false);
+  }
+  function setItem(gi,id,val){setGroups(prev=>prev.map((g,i)=>i!==gi?g:{...g,items:g.items.map(it=>it.id===id?{...it,selected:val}:it)}));}
+  function setGroupAll(gi,val){setGroups(prev=>prev.map((g,i)=>i!==gi?g:{...g,items:g.items.map(it=>({...it,selected:val}))}));}
+  function setAll(val){setGroups(prev=>prev.map(g=>({...g,items:g.items.map(it=>({...it,selected:val}))})));}
+  const allItems=groups?groups.flatMap(g=>g.items):[];
+  const selItems=allItems.filter(i=>i.selected);
+  const matchedGroups=groups?groups.filter(g=>g.slaProd&&selProds.includes(g.slaProd)):[];
+  const unmatchedGroups=groups?groups.filter(g=>!(g.slaProd&&selProds.includes(g.slaProd))):[];
+  const visibleGroups=groups?(showAll?groups:matchedGroups):[];
+  return(
+    <div style={{border:"1.5px solid #e0e0e0",borderRadius:10,overflow:"hidden"}}>
+      <div style={{padding:"8px 14px",background:"#f0f4ff",borderBottom:"1px solid #c5cae9",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span style={{fontWeight:700,fontSize:12,color:"#1565c0"}}>{"📅 "+label}</span>
+        {fileName&&<span style={{fontSize:10,color:"#888"}}>{"📄 "+fileName}</span>}
+      </div>
+      <div style={{padding:12}}>
+        {!groups&&!busy&&<div onClick={()=>fileRef.current&&fileRef.current.click()} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();handleFile(e.dataTransfer.files[0]);}} style={{padding:"14px",borderRadius:8,border:"2px dashed #90caf9",background:"#f3f8ff",cursor:"pointer",textAlign:"center"}}>
+          <div style={{fontSize:22,marginBottom:3}}>📂</div>
+          <div style={{fontSize:12,fontWeight:700,color:"#1565c0"}}>{label+" 파일 업로드"}</div>
+          <div style={{fontSize:10,color:"#888",marginTop:2}}>클릭 또는 드래그 (.xlsx / .xls)</div>
+        </div>}
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={e=>{handleFile(e.target.files[0]);e.target.value="";}}/>
+        {busy&&<div style={{textAlign:"center",padding:14,color:"#888",fontSize:12}}>📊 분석 중...</div>}
+        {err&&<div style={{padding:"6px 10px",background:"#ffebee",borderRadius:6,color:"#c62828",fontSize:11,marginTop:6}}>{err}<button onClick={()=>{setErr("");setGroups(null);}} style={{marginLeft:6,fontSize:10,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",color:"#c62828"}}>다시 시도</button></div>}
+        {groups&&<div>
+          {groups[0]&&groups[0].usedPayCol&&<div style={{padding:"6px 10px",background:"#e8f5e9",borderRadius:6,border:"1px solid #a5d6a7",fontSize:11,color:"#1b5e20",marginBottom:5}}>✅ <b>납부 예상요금</b> 컬럼 인식 완료 — SLA 크레딧은 크레딧·할인 적용 후 <b>실납부액</b> 기준으로 산정됩니다.</div>}
+          {groups[0]&&!groups[0].usedPayCol&&<div style={{padding:"6px 10px",background:"#fff8e1",borderRadius:6,border:"1px solid #ffe082",fontSize:11,color:"#b36200",marginBottom:5}}>⚠ 납부 예상요금 컬럼을 찾지 못해 <b>사용금액</b> 기준으로 표시됩니다. 크레딧·할인이 있다면 수동으로 납부금액을 확인하세요.</div>}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5,flexWrap:"wrap",gap:4}}>
+            <span style={{fontSize:10,color:"#555"}}>{groups.length+"개 그룹 / "+allItems.length+"개 항목"}</span>
+            <div style={{display:"flex",gap:3}}>
+              <button onClick={()=>setAll(true)}  style={{fontSize:10,padding:"2px 7px",borderRadius:4,border:"1px solid #1565c0",background:"#e3f2fd",color:"#1565c0",cursor:"pointer"}}>전체선택</button>
+              <button onClick={()=>setAll(false)} style={{fontSize:10,padding:"2px 7px",borderRadius:4,border:"1px solid #aaa",background:"#f5f5f5",color:"#666",cursor:"pointer"}}>전체해제</button>
+              <button onClick={()=>{setGroups(null);setFileName("");setShowAll(false);}} style={{fontSize:10,padding:"2px 7px",borderRadius:4,border:"1px solid #e53935",background:"#ffebee",color:"#e53935",cursor:"pointer"}}>재업로드</button>
+            </div>
+          </div>
+          {matchedGroups.length===0&&<div style={{padding:"6px 10px",background:"#fff8e1",borderRadius:6,border:"1px solid #ffe082",fontSize:11,color:"#b36200",marginBottom:5}}>⚠ 장애 상품에 해당하는 항목을 찾지 못했습니다.<button onClick={()=>setShowAll(true)} style={{marginLeft:6,fontSize:10,background:"none",border:"1px solid #aaa",borderRadius:3,padding:"1px 5px",cursor:"pointer",color:"#555"}}>전체 보기</button></div>}
+          {matchedGroups.length>0&&unmatchedGroups.length>0&&<div style={{marginBottom:4,display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:10,color:"#888"}}>{"장애 상품 외 "+unmatchedGroups.length+"개 숨김"}</span><button onClick={()=>setShowAll(v=>!v)} style={{fontSize:10,background:"none",border:"1px solid #ccc",borderRadius:3,padding:"1px 5px",cursor:"pointer",color:"#555"}}>{showAll?"장애 상품만":"전체 보기"}</button></div>}
+          <div style={{maxHeight:260,overflowY:"auto",border:"1px solid #e0e0e0",borderRadius:7,marginBottom:8}}>
+            {visibleGroups.map((group,gi)=>{
+              const gIdx=groups.indexOf(group);
+              const gSel=group.items.filter(i=>i.selected).length;
+              const gSelAmt=group.items.filter(i=>i.selected).reduce((s,i)=>s+i.amount,0);
+              const gTotalAmt=group.items.reduce((s,i)=>s+i.amount,0);
+              const isMatched=!!(group.slaProd&&selProds.includes(group.slaProd));
+              const allSel=gSel===group.items.length,someSel=gSel>0&&!allSel;
+              return(
+                <div key={gi} style={{borderBottom:gi<visibleGroups.length-1?"1px solid #f0f0f0":"none"}}>
+                  <div style={{padding:"7px 10px",background:isMatched?"#e8f5e9":"#f5f5f5",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:4}}>
+                    <div style={{display:"flex",alignItems:"center",gap:5}}>
+                      <input type="checkbox" checked={allSel} ref={el=>{if(el)el.indeterminate=someSel;}} onChange={e=>setGroupAll(gIdx,e.target.checked)} style={{width:13,height:13,cursor:"pointer"}}/>
+                      <span style={{fontWeight:700,fontSize:12,color:isMatched?"#1b5e20":"#333"}}>{group.raw}</span>
+                      {group.slaProd&&group.slaProd!==group.raw&&<span style={{fontSize:9,color:"#1565c0",background:"#e3f2fd",borderRadius:3,padding:"1px 5px"}}>{"→ "+group.slaProd}</span>}
+                      {isMatched&&<span style={{fontSize:9,color:"#fff",background:"#2e7d32",borderRadius:3,padding:"1px 6px",fontWeight:700}}>✓ 장애상품</span>}
+                    </div>
+                    <div style={{fontSize:10,color:"#555",textAlign:"right"}}>
+                      선택 <b style={{color:"#1565c0"}}>{gSel+"/"+group.items.length}</b>
+                      <b style={{color:"#1565c0",marginLeft:6}}>{"₩"+fmtN(gSelAmt)}</b>
+                      {gSel<group.items.length&&<span style={{color:"#aaa",fontSize:9,marginLeft:3}}>{"(전체 ₩"+fmtN(gTotalAmt)+")"}</span>}
+                    </div>
+                  </div>
+                  {group.items.map((it,ii)=>(
+                    <div key={it.id} onClick={()=>setItem(gIdx,it.id,!it.selected)} style={{padding:"5px 10px 5px 26px",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",background:it.selected?(isMatched?"#f1f8e9":"#f0f4ff"):ii%2===0?"#fff":"#fafafa",borderTop:"1px solid #f0f0f0"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:5,flex:1,minWidth:0}}>
+                        <div style={{width:12,height:12,borderRadius:3,border:"2px solid "+(it.selected?"#1565c0":"#ccc"),background:it.selected?"#1565c0":"#fff",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>{it.selected&&<span style={{color:"#fff",fontSize:7,fontWeight:700}}>✓</span>}</div>
+                        <span style={{fontSize:11,color:it.selected?"#222":"#888",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.detail}</span>
+                      </div>
+                      <div style={{flexShrink:0,marginLeft:5,textAlign:"right"}}>
+                        {it.usageAmount>0&&it.usageAmount!==it.amount&&<div style={{fontSize:9,color:"#aaa",textDecoration:"line-through"}}>{"₩"+fmtN(it.usageAmount)}</div>}
+                        <span style={{fontSize:11,fontWeight:600,color:it.selected?(it.amount===0&&it.usageAmount>0?"#e65100":"#1565c0"):"#bbb"}}>
+                          {it.amount===0&&it.usageAmount>0?"₩0 (크레딧 상쇄)":"₩"+fmtN(it.amount)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{padding:"8px 12px",background:"#f0f4ff",borderRadius:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <b style={{fontSize:12,color:"#1565c0"}}>{selItems.length+"개 선택"}</b>
+              <b style={{fontSize:13,color:"#1565c0",marginLeft:10}}>{"₩"+fmtN(selItems.reduce((s,i)=>s+i.amount,0))}</b>
+              <span style={{fontSize:10,color:"#888",marginLeft:6}}>{groups&&groups[0]&&groups[0].usedPayCol?"(납부 예상요금 기준)":"(사용금액 기준)"}</span>
+            </div>
+            <span style={{fontSize:10,color:"#888"}}>SLA 크레딧 산정 기준 금액</span>
+          </div>
+        </div>}
+      </div>
+    </div>
+  );
+}
+
+function Step3({selProds,onConfirm,onSkip,onReset,monthSegs,prodOpts,extraVals}){
+  const groupsRefs=useRef({});
+  const[manualMode,setManualMode]=useState(false);
+  const[manualFees,setManualFees]=useState({});// {prod_mk: 금액문자열}
+  monthSegs.forEach(seg=>{const mk=seg.year+"-"+pad2(seg.month+1);if(!groupsRefs.current[mk])groupsRefs.current[mk]={current:null};});
+  function setManualFee(prod,mk,val){setManualFees(prev=>({...prev,[prod+"__"+mk]:val}));}
+  function getManualFee(prod,mk){return manualFees[prod+"__"+mk]||"";}
+  function confirmAll(){
+    const fee={},det={};
+    if(manualMode){
+      selProds.forEach(prod=>{
+        monthSegs.forEach(seg=>{
+          const mk=seg.year+"-"+pad2(seg.month+1);
+          const raw=getManualFee(prod,mk).replace(/[^0-9]/g,"");
+          const amt=Number(raw)||0;
+          if(amt>0){
+            if(!fee[prod])fee[prod]={};fee[prod][mk]=(fee[prod][mk]||0)+amt;
+          }
+        });
+      });
+    } else {
+      monthSegs.forEach(seg=>{
+        const mk=seg.year+"-"+pad2(seg.month+1);
+        const groups=(groupsRefs.current[mk]||{}).current;if(!groups)return;
+        groups.forEach(g=>{
+          const sp=g.slaProd;if(!sp||!selProds.includes(sp))return;
+          const items=g.items.filter(i=>i.selected);const amt=items.reduce((s,i)=>s+i.amount,0);
+          if(!fee[sp])fee[sp]={};fee[sp][mk]=(fee[sp][mk]||0)+amt;
+          if(!det[sp])det[sp]={};if(!det[sp][mk])det[sp][mk]=[];
+          items.forEach(i=>det[sp][mk].push({detail:i.detail,amount:i.amount}));
+        });
+      });
+    }
+    onConfirm(fee,det);
+  }
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      {monthSegs.length>0&&selProds.length>0&&<div style={{background:"#fff",borderRadius:12,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+        <div style={{fontWeight:700,fontSize:13,color:"#1a237e",marginBottom:8}}>📊 적용 보상율</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+          {selProds.map(prod=>monthSegs.map((seg,si)=>{
+            const{tiers}=getActivePolicy(prod,prodOpts);
+            const uptime=calcUptime(prod,seg.minutes,seg.year,seg.month,extraVals[prod]||{});
+            const rate=getRateFromUptime(uptime,tiers);const clr=rate>0?"#1565c0":"#2e7d32";
+            return(<div key={prod+si} style={{padding:"6px 12px",borderRadius:8,background:rate>0?"#e3f2fd":"#e8f5e9",border:"1.5px solid "+(rate>0?"#90caf9":"#a5d6a7")}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#333"}}>{prod+" · "+seg.year+"/"+pad2(seg.month+1)}</div>
+              <div style={{fontSize:16,fontWeight:800,color:clr}}>{rate>0?Math.round(rate*100)+"%":"보상없음"}</div>
+              <div style={{fontSize:10,color:"#888"}}>{uptime.toFixed(3)+"% 가동률"}</div>
+            </div>);
+          }))}
+        </div>
+      </div>}
+      <div style={{background:"#fff",borderRadius:12,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:14,color:"#1565c0",marginBottom:2}}>이용요금 입력<span style={{fontSize:11,background:"#f3f4f6",color:"#888",borderRadius:4,padding:"1px 6px",fontWeight:400,marginLeft:6}}>선택사항</span></div>
+            <div style={{fontSize:11,color:"#888"}}>{manualMode?"상품·월별 납부 예상요금을 직접 입력하세요":"청구서 엑셀을 업로드하거나 직접 금액을 입력하세요"}</div>
+          </div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <div style={{display:"flex",borderRadius:8,overflow:"hidden",border:"1px solid #ddd",fontSize:11}}>
+                <button onClick={()=>setManualMode(false)} style={{padding:"5px 12px",background:manualMode?"#f5f5f5":"#1565c0",color:manualMode?"#888":"#fff",border:"none",cursor:"pointer",fontWeight:manualMode?400:700}}>파일 업로드</button>
+                <button onClick={()=>setManualMode(true)}  style={{padding:"5px 12px",background:manualMode?"#1565c0":"#f5f5f5",color:manualMode?"#fff":"#888",border:"none",cursor:"pointer",fontWeight:manualMode?700:400}}>직접 입력</button>
+              </div>
+              <button onClick={onSkip} style={{padding:"5px 12px",background:"#f5f5f5",color:"#555",border:"1px solid #ddd",borderRadius:8,fontSize:11,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>건너뛰기</button>
+            </div>
+        </div>
+        {!manualMode&&<div style={{fontSize:11,color:"#333",marginBottom:14,padding:"10px 14px",background:"#fff8e1",borderRadius:8,border:"1px solid #ffe082",lineHeight:2.0}}>
+          💡 NAP/NPP/NFA &gt; 고객사 조회 &gt; 청구 탭 &gt; 장애 발생 이용월 상세내역 조회 &gt; 상세 요금 내역 조회 &gt; <b>Excel 다운로드</b>
+          <br/><span style={{fontSize:10,color:"#e65100",fontWeight:600}}>⚠ 월이 걸친 장애는 각 이용월 파일을 따로 업로드하세요</span>
+        </div>}
+        {manualMode&&<div style={{marginBottom:14,padding:"10px 14px",background:"#f0f4ff",borderRadius:8,border:"1px solid #c5cae9",fontSize:11,color:"#333",lineHeight:1.8}}>
+          💡 상품별 · 월별 <b>납부 예상요금</b>(크레딧·할인 적용 후 실납부 금액)을 입력하세요. 쉼표 포함 입력 가능 (예: 221,000)
+        </div>}
+        {monthSegs.length>0
+          ? manualMode
+            ? <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                {monthSegs.map(seg=>{
+                  const mk=seg.year+"-"+pad2(seg.month+1);
+                  return(
+                    <div key={mk} style={{border:"1.5px solid #e0e0e0",borderRadius:10,overflow:"hidden"}}>
+                      <div style={{padding:"8px 14px",background:"#f0f4ff",borderBottom:"1px solid #c5cae9",fontWeight:700,fontSize:12,color:"#1565c0"}}>
+                        {seg.year+"년 "+(seg.month+1)+"월 납부 예상요금"}
+                      </div>
+                      <div style={{padding:12,display:"flex",flexDirection:"column",gap:8}}>
+                        {selProds.map(prod=>{
+                          const val=getManualFee(prod,mk);
+                          const num=Number(val.replace(/[^0-9]/g,""))||0;
+                          return(
+                            <div key={prod} style={{display:"flex",alignItems:"center",gap:10}}>
+                              <div style={{flex:"1 1 120px",fontSize:12,fontWeight:600,color:"#333"}}>{prod}</div>
+                              <div style={{position:"relative",flex:"0 0 180px"}}>
+                                <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",fontSize:12,color:"#888",pointerEvents:"none"}}>₩</span>
+                                <input
+                                  value={val}
+                                  onChange={e=>setManualFee(prod,mk,e.target.value)}
+                                  placeholder="0"
+                                  inputMode="numeric"
+                                  style={{width:"100%",padding:"7px 10px 7px 22px",border:"1.5px solid "+(num>0?"#1565c0":"#ddd"),borderRadius:7,fontSize:12,boxSizing:"border-box",outline:"none",fontFamily:"monospace",color:num>0?"#1565c0":"#333"}}
+                                />
+                              </div>
+                              {num>0&&<div style={{fontSize:11,color:"#1565c0",fontWeight:700,minWidth:80,textAlign:"right"}}>{"₩"+fmtN(num)}</div>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            : <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                {monthSegs.map(seg=>{
+                  const mk=seg.year+"-"+pad2(seg.month+1);
+                  if(!groupsRefs.current[mk])groupsRefs.current[mk]={current:null};
+                  return(<MonthUploader key={mk} label={seg.year+"년 "+(seg.month+1)+"월 이용요금"} selProds={selProds} groupsRef={groupsRefs.current[mk]}/>);
+                })}
+              </div>
+          :<div style={{padding:"12px",background:"#f5f5f5",borderRadius:8,fontSize:12,color:"#888",textAlign:"center"}}>장애 기간을 먼저 입력하면 월별 업로드 영역이 표시됩니다.</div>
+        }
+        {monthSegs.length>0&&<div style={{marginTop:14,display:"flex",justifyContent:"flex-end",gap:8}}>
+          <button onClick={onSkip}   style={{padding:"8px 16px",background:"#f5f5f5",color:"#555",border:"1px solid #ddd",borderRadius:8,fontSize:12,cursor:"pointer"}}>금액 없이 보상율만 확인</button>
+          <button onClick={confirmAll} style={{padding:"8px 22px",background:"#1565c0",color:"#fff",border:"none",borderRadius:8,fontSize:12,cursor:"pointer",fontWeight:700}}>결과 확인</button>
+        </div>}
+        <div style={{marginTop:14,paddingTop:12,borderTop:"1px solid #eee",textAlign:"center"}}>
+          <button onClick={onReset} style={{padding:"7px 20px",background:"#f5f5f5",color:"#666",border:"1px solid #ddd",borderRadius:8,fontSize:12,cursor:"pointer",fontWeight:600}}>🔄 처음부터 다시 시작</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Step4({results,startDt,endDt,hasBilling,prodOpts}){
+  const[openSla,setOpenSla]=useState({});const[openDetail,setOpenDetail]=useState({});
+  const totalCredit=results.reduce((s,r)=>s+r.credit,0);
+  const totalFee=results.reduce((s,r)=>s+r.feeNum,0);
+  const totalDownMin=results.reduce((s,r)=>s+r.downMin,0);
+  const uniqueProds=[...new Set(results.map(r=>r.prod))];
+  const monthKeys=[...new Set(results.map(r=>r.year+"-"+pad2(r.month+1)))].sort();
+  const byMonth={};monthKeys.forEach(mk=>{byMonth[mk]=results.filter(r=>(r.year+"-"+pad2(r.month+1))===mk);});
+  const hasCredit=totalCredit>0;
+  const accentC=hasCredit?"#1565c0":"#2e7d32";
+  const prodSummary=uniqueProds.map(prod=>{
+    const rows=results.filter(r=>r.prod===prod);
+    const maxRate=Math.max(...rows.map(r=>r.rate));
+    const totalC=rows.reduce((s,r)=>s+r.credit,0);
+    const totalF=rows.reduce((s,r)=>s+r.feeNum,0);
+    const totalD=rows.reduce((s,r)=>s+r.downMin,0);
+    return{prod,maxRate,totalC,totalF,totalD};
+  });
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:12}}>
+      <div style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,.10)"}}>
+        <div style={{padding:"14px 20px",background:hasCredit?"linear-gradient(135deg,#1a237e,#1565c0)":"linear-gradient(135deg,#1b5e20,#2e7d32)",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:15,color:"#fff",marginBottom:3}}>SLA 보상 산정 결과</div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,.7)"}}>
+              {(startDt?startDt.replace("T"," ").slice(0,16):"")+(" ~ ")+(endDt?endDt.replace("T"," ").slice(0,16):"")}
+              {" · 총 장애 "+durStr(totalDownMin)}
+            </div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:10,color:"rgba(255,255,255,.65)",marginBottom:2}}>{hasBilling?"납부 예상요금 기준":"이용요금 미입력"}</div>
+            <div style={{fontSize:30,fontWeight:900,color:"#fff",lineHeight:1}}>{totalCredit>0?"₩"+fmtN(totalCredit):hasBilling?"보상 없음":"--"}</div>
+            <div style={{fontSize:10,color:"rgba(255,255,255,.55)",marginTop:2}}>예상 크레딧 합계 · 10원 미만 절삭</div>
+          </div>
+        </div>
+        <div style={{padding:"16px 20px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:16}}>
+            <div style={{padding:"12px 14px",borderRadius:10,background:"#f5f7fa",border:"1.5px solid #e0e0e0"}}>
+              <div style={{fontSize:10,color:"#888",marginBottom:5,fontWeight:600}}>장애 상품</div>
+              <div style={{fontSize:12,fontWeight:700,color:"#333",lineHeight:1.6}}>{uniqueProds.join(", ")}</div>
+              <div style={{fontSize:10,color:"#aaa",marginTop:4}}>{uniqueProds.length+"개 상품"}</div>
+            </div>
+            <div style={{padding:"12px 14px",borderRadius:10,background:"#f5f7fa",border:"1.5px solid #e0e0e0"}}>
+              <div style={{fontSize:10,color:"#888",marginBottom:5,fontWeight:600}}>장애 기간</div>
+              <div style={{fontSize:12,fontWeight:700,color:"#333"}}>{startDt?startDt.replace("T"," ").slice(0,16):"-"}</div>
+              <div style={{fontSize:10,color:"#aaa",margin:"2px 0"}}>~</div>
+              <div style={{fontSize:12,fontWeight:700,color:"#333"}}>{endDt?endDt.replace("T"," ").slice(0,16):"-"}</div>
+              <div style={{fontSize:10,color:"#aaa",marginTop:4}}>{"총 "+durStr(totalDownMin)}</div>
+            </div>
+            {hasBilling&&<div style={{padding:"12px 14px",borderRadius:10,background:"#f5f7fa",border:"1.5px solid #e0e0e0"}}>
+              <div style={{fontSize:10,color:"#888",marginBottom:5,fontWeight:600}}>납부 예상요금 합계</div>
+              <div style={{fontSize:22,fontWeight:900,color:"#333"}}>{"₩"+fmtN(totalFee)}</div>
+              <div style={{fontSize:10,color:"#aaa",marginTop:4}}>SLA 크레딧 산정 기준</div>
+            </div>}
+            <div style={{padding:"12px 14px",borderRadius:10,background:hasCredit?"#e3f2fd":"#e8f5e9",border:"2px solid "+accentC}}>
+              <div style={{fontSize:10,color:accentC,marginBottom:5,fontWeight:700}}>예상 서비스 크레딧</div>
+              <div style={{fontSize:26,fontWeight:900,color:accentC,lineHeight:1}}>{totalCredit>0?"₩"+fmtN(totalCredit):hasBilling?"없음":"--"}</div>
+              <div style={{fontSize:10,color:"#aaa",marginTop:4}}>10원 단위 미만 절삭</div>
+            </div>
+          </div>
+          <div style={{borderTop:"1px solid #f0f0f0",paddingTop:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#555",marginBottom:8}}>상품별 보상 요약</div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {prodSummary.map(({prod,maxRate,totalC,totalF,totalD})=>{
+                const rc=rCol(maxRate);
+                const pol=getActivePolicy(prod,prodOpts);
+                const isCommon=pol.isCommon||false;
+                return(
+                  <div key={prod} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:8,background:"#fafafa",border:"1px solid #eee",flexWrap:"wrap"}}>
+                    <div style={{flex:"1 1 120px",minWidth:100}}>
+                      <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
+                        <span style={{fontWeight:700,fontSize:12,color:"#333"}}>{prod}</span>
+                        {isCommon&&<span style={{fontSize:9,background:"#fff3e0",color:"#e65100",borderRadius:3,padding:"0 4px",border:"1px solid #ffcc02"}}>공통SLA</span>}
+                      </div>
+                      <div style={{fontSize:10,color:"#888",marginTop:2}}>{"장애 "+durStr(totalD)}</div>
+                    </div>
+                    <div style={{textAlign:"center",minWidth:55}}>
+                      <div style={{fontSize:9,color:"#aaa",marginBottom:1}}>보상율</div>
+                      <div style={{fontSize:18,fontWeight:900,color:maxRate>0?rc:"#2e7d32"}}>{maxRate>0?Math.round(maxRate*100)+"%":"없음"}</div>
+                    </div>
+                    {hasBilling&&<div style={{textAlign:"right",minWidth:80}}>
+                      <div style={{fontSize:9,color:"#aaa",marginBottom:1}}>납부 예상요금</div>
+                      <div style={{fontSize:12,fontWeight:600,color:"#555"}}>{totalF>0?"₩"+fmtN(totalF):"-"}</div>
+                    </div>}
+                    <div style={{textAlign:"right",minWidth:90}}>
+                      <div style={{fontSize:9,color:"#aaa",marginBottom:1}}>예상 크레딧</div>
+                      <div style={{fontSize:15,fontWeight:900,color:totalC>0?rc:"#bbb"}}>{totalC>0?"₩"+fmtN(totalC):hasBilling?"없음":"미입력"}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          {!hasBilling&&<div style={{marginTop:10,padding:"8px 12px",background:"#f5f5f5",borderRadius:8,fontSize:11,color:"#888"}}>
+            이용요금을 입력하면 정확한 크레딧 금액을 계산할 수 있습니다.
+          </div>}
+        </div>
+      </div>
+      {monthKeys.map(mk=>{
+        const rows=byMonth[mk];const mc=rows.reduce((s,r)=>s+r.credit,0);const mf=rows.reduce((s,r)=>s+r.feeNum,0);const[yr,mo]=mk.split("-");const hc=mc>0;
+        return(<div key={mk} style={{background:"#fff",borderRadius:12,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+          <div style={{padding:"10px 16px",background:hc?"#e3f2fd":"#e8f5e9",borderBottom:"2px solid "+(hc?"#1565c0":"#2e7d32"),display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontWeight:700,fontSize:13,color:hc?"#1565c0":"#2e7d32"}}>{yr+"년 "+mo+"월 이용 월"}</span>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              {mf>0&&<span style={{fontSize:11,color:"#666"}}>{"납부 예상요금 합계 ₩"+fmtN(mf)}</span>}
+              <span style={{fontWeight:800,fontSize:15,color:hc?"#1565c0":"#2e7d32"}}>{hc?"크레딧 ₩"+fmtN(mc):"보상 없음"}</span>
+            </div>
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead><tr style={{background:"#f5f5f5"}}>{["상품","장애 시간","월 가용률","보상율","납부 예상요금","예상 크레딧"].map(h=><th key={h} style={{padding:"7px 10px",textAlign:h==="상품"?"left":"right",border:"1px solid #eee",fontWeight:600,whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+              <tbody>{rows.map((r,i)=>{
+                const dk=r.prod+"-"+(r.year+"-"+pad2(r.month+1));const hd=r.details&&r.details.length>0;
+                return(<React.Fragment key={i}>
+                  <tr style={{background:i%2===0?"#fff":"#fafafa"}}>
+                    <td style={{padding:"7px 10px",border:"1px solid #eee",fontWeight:600,color:"#1565c0"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:5}}>
+                        {r.prod}
+                        {hd&&<button onClick={()=>setOpenDetail(p=>({...p,[dk]:!p[dk]}))} style={{fontSize:9,padding:"1px 6px",borderRadius:4,border:"1px solid #c5cae9",background:openDetail[dk]?"#e8f0fe":"#f5f7fa",color:"#1565c0",cursor:"pointer",whiteSpace:"nowrap"}}>
+                          {openDetail[dk]?"▲ 접기":"▼ 상세 "+r.details.length+"건"}
+                        </button>}
+                      </div>
+                    </td>
+                    <td style={{padding:"7px 10px",border:"1px solid #eee",textAlign:"right"}}>{durStr(r.downMin)}</td>
+                    <td style={{padding:"7px 10px",border:"1px solid #eee",textAlign:"right",color:rCol(r.rate),fontWeight:700}}>{r.uptime.toFixed(3)+"%"}</td>
+                    <td style={{padding:"7px 10px",border:"1px solid #eee",textAlign:"right",color:rCol(r.rate),fontWeight:700}}>{r.rate>0?Math.round(r.rate*100)+"%":"없음"}</td>
+                    <td style={{padding:"7px 10px",border:"1px solid #eee",textAlign:"right"}}>{r.feeNum>0?"₩"+fmtN(r.feeNum):"-"}</td>
+                    <td style={{padding:"7px 10px",border:"1px solid #eee",textAlign:"right",fontWeight:700,color:rCol(r.rate)}}>{r.rate>0?(r.feeNum>0?"₩"+fmtN(r.credit):"금액 미입력"):"-"}</td>
+                  </tr>
+                  {hd&&openDetail[dk]&&r.details.map((d,di)=>(
+                    <tr key={"d"+di} style={{background:"#f8faff"}}>
+                      <td colSpan={4} style={{padding:"4px 10px 4px 28px",border:"1px solid #eee",fontSize:10,color:"#555"}}><span style={{color:"#9e9e9e",marginRight:5}}>└</span>{d.detail}</td>
+                      <td style={{padding:"4px 10px",border:"1px solid #eee",textAlign:"right",fontSize:10,color:"#555"}}>{"₩"+fmtN(d.amount)}</td>
+                      <td style={{padding:"4px 10px",border:"1px solid #eee",textAlign:"right",fontSize:10,color:r.rate>0?"#1565c0":"#aaa",fontWeight:600}}>{r.rate>0?"₩"+fmtN(Math.floor(d.amount*r.rate/10)*10):"-"}</td>
+                    </tr>
+                  ))}
+                </React.Fragment>);
+              })}</tbody>
+              {rows.length>1&&<tfoot><tr style={{background:"#f0f4ff"}}><td style={{padding:"7px 10px",border:"1px solid #eee",fontWeight:700}}>합계</td><td colSpan={3} style={{border:"1px solid #eee"}}></td><td style={{padding:"7px 10px",border:"1px solid #eee",textAlign:"right",fontWeight:700}}>{mf>0?"₩"+fmtN(mf):"-"}</td><td style={{padding:"7px 10px",border:"1px solid #eee",textAlign:"right",fontWeight:800,color:hc?"#1565c0":"#2e7d32"}}>{hc?"₩"+fmtN(mc):"없음"}</td></tr></tfoot>}
+            </table>
+          </div>
+        </div>);
+      })}
+      <div style={{background:"#fff",borderRadius:12,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+        <div style={{fontWeight:700,fontSize:13,color:"#333",marginBottom:10}}>상품별 SLA 정책 상세</div>
+        {uniqueProds.map(prod=>(
+          <div key={prod} style={{marginBottom:6}}>
+            <button onClick={()=>setOpenSla(p=>({...p,[prod]:!p[prod]}))} style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 13px",background:openSla[prod]?"#e8f0fe":"#f5f7fa",border:"1.5px solid "+(openSla[prod]?"#1565c0":"#e0e0e0"),borderRadius:openSla[prod]?"8px 8px 0 0":"8px",cursor:"pointer",textAlign:"left"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontWeight:700,fontSize:12,color:"#1565c0"}}>{prod}</span><span style={{fontSize:10,background:"#e8f5e9",color:"#2e7d32",borderRadius:3,padding:"1px 6px"}}>{"SLA "+getActiveSla(prod,prodOpts)+"%"}</span></div>
+              <span style={{fontSize:12,color:"#888",display:"inline-block",transform:openSla[prod]?"rotate(180deg)":"none"}}>▼</span>
+            </button>
+            {openSla[prod]&&<div style={{border:"1.5px solid #1565c0",borderTop:"none",borderRadius:"0 0 8px 8px",overflow:"hidden"}}><SlaPolicyPanel prod={prod} prodOpts={prodOpts}/></div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+
+
+// NwStep1 & NwApp
+function NwStep1({selProds,setSelProds}){
+  var sq=useState(""),setSearch=sq[1];sq=sq[0];
+  var visible=NW_PRODS.filter(function(p){
+    var n=p.toLowerCase().replace(/\s+/g,"");
+    var q=sq.trim().toLowerCase().replace(/\s+/g,"");
+    if(!q)return true;
+    if(n.includes(q))return true;
+    return(PROD_ALIASES[p]||[]).some(function(a){return a.includes(q);});
+  });
+  function toggle(p){setSelProds(function(prev){return prev.includes(p)?prev.filter(function(x){return x!==p;}):[...prev,p];});}
+  var green="#00c73c";
+  return(
+    <div style={{background:"#fff",borderRadius:12,padding:16,boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+      <div style={{fontWeight:700,fontSize:14,color:green,marginBottom:4}}>장애 서비스 선택</div>
+      <div style={{fontSize:11,color:"#888",marginBottom:12}}>장애가 발생한 서비스를 선택하세요 (복수 선택 가능)</div>
+      <input value={sq} onChange={function(e){setSearch(e.target.value);}} placeholder="서비스명 검색..."
+        style={{width:"100%",padding:"8px 12px",border:"1.5px solid #e0e0e0",borderRadius:8,fontSize:12,boxSizing:"border-box",marginBottom:10,outline:"none"}}/>
+      {selProds.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:10,padding:"8px 10px",background:"#e8f9f0",borderRadius:8}}>
+        <span style={{fontSize:11,color:"#00a030",fontWeight:700,alignSelf:"center"}}>{"선택 "+selProds.length+"개"}</span>
+        {selProds.map(function(p){return(
+          <span key={p} onClick={function(){toggle(p);}} style={{fontSize:11,background:green,color:"#fff",borderRadius:14,padding:"3px 10px",cursor:"pointer",display:"flex",alignItems:"center",gap:3}}>
+            {p}<span style={{opacity:0.8}}>x</span>
+          </span>
+        );})}
+      </div>}
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {visible.map(function(prod){
+          var sel=selProds.includes(prod);
+          return(
+            <div key={prod} onClick={function(){toggle(prod);}} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:8,border:"1.5px solid "+(sel?green:"#e0e0e0"),background:sel?"#e8f9f0":"#fafafa",cursor:"pointer"}}>
+              <div style={{width:16,height:16,borderRadius:4,border:"2px solid "+(sel?green:"#ccc"),background:sel?green:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                {sel&&<span style={{color:"#fff",fontSize:9,fontWeight:700}}>V</span>}
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:sel?700:400,color:sel?"#007a28":"#333"}}>{prod}</div>
+                <div style={{fontSize:10,color:"#888",marginTop:1}}>SLA 99.9% | 95% 미만 최대 50% 크레딧</div>
+              </div>
+              {sel&&<span style={{fontSize:10,background:green,color:"#fff",borderRadius:10,padding:"2px 8px",fontWeight:700}}>선택됨</span>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function NwApp(){
+  var stepState=useState(1),step=stepState[0],setStep=stepState[1];
+  var prodsState=useState([]),selProds=prodsState[0],setSelProds=prodsState[1];
+  var startState=useState(""),startDt=startState[0],setStartDt=startState[1];
+  var endState=useState(""),endDt=endState[0],setEndDt=endState[1];
+  var billState=useState(null),setBillingData=billState[1];
+  var resState=useState(null),results=resState[0],setResults=resState[1];
+  var monthSegs=startDt&&endDt?splitByMonth(startDt,endDt):[];
+  var green="#00c73c",darkGreen="#007a28";
+
+  function doReset(){setStep(1);setResults(null);setBillingData(null);setStartDt("");setEndDt("");setSelProds([]);}
+  function canNext(){if(step===1)return selProds.length>0;if(step===2)return monthSegs.length>0;return false;}
+  function stepDone(s){if(s===1)return selProds.length>0;if(s===2)return monthSegs.length>0;if(s===3)return!!results;if(s===4)return!!results;return false;}
+
+  function computeAndGo(fee,det){
+    var hasBilling=!!fee&&Object.keys(fee).length>0;
+    setBillingData(hasBilling?fee:null);
+    var segs=splitByMonth(startDt,endDt);var res=[];
+    selProds.forEach(function(prod){
+      var pol=getActivePolicy(prod,{});var tiers=pol.tiers;
+      segs.forEach(function(seg){
+        var mk=seg.year+"-"+pad2(seg.month+1);
+        var feeNum=fee&&fee[prod]&&fee[prod][mk]?fee[prod][mk]:0;
+        var details=(det&&det[prod]&&det[prod][mk])||[];
+        var uptime=calcUptime(prod,seg.minutes,seg.year,seg.month,{});
+        var rate=getRateFromUptime(uptime,tiers);
+        var credit=feeNum>0?Math.floor(feeNum*rate/10)*10:0;
+        res.push({prod:prod,year:seg.year,month:seg.month,downMin:seg.minutes,uptime:uptime,rate:rate,feeNum:feeNum,credit:credit,details:details});
+      });
+    });
+    setResults(res);setStep(4);
+  }
+
+  var NW_STEPS=[
+    {num:1,label:"서비스 선택",icon:"1"},
+    {num:2,label:"장애 기간 입력",icon:"2"},
+    {num:3,label:"이용요금 업로드",icon:"3"},
+    {num:4,label:"결과 확인",icon:"4"}
+  ];
+
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      <div style={{background:"#fff",borderRadius:12,padding:"14px 16px",boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+        <div style={{display:"flex",alignItems:"center"}}>
+          {NW_STEPS.map(function(s,i){
+            var done=stepDone(s.num),active=step===s.num;
+            return(
+              <div key={s.num} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",position:"relative"}}>
+                {i>0&&<div style={{position:"absolute",left:0,top:14,width:"50%",height:3,background:stepDone(s.num-1)?green:"#e0e0e0",zIndex:0}}/>}
+                {i<3&&<div style={{position:"absolute",right:0,top:14,width:"50%",height:3,background:done?green:"#e0e0e0",zIndex:0}}/>}
+                <div onClick={function(){if(done||active||stepDone(s.num-1))setStep(s.num);}} style={{width:28,height:28,borderRadius:"50%",background:done?green:active?"#52d68a":"#e0e0e0",color:"#fff",fontSize:12,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",position:"relative",zIndex:1,cursor:"pointer"}}>
+                  {done&&step>s.num?"V":s.icon}
+                </div>
+                <div style={{fontSize:10,marginTop:4,color:active?green:done?"#555":"#aaa",fontWeight:active?700:400,textAlign:"center"}}>{s.label}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {step===1&&<NwStep1 selProds={selProds} setSelProds={setSelProds}/>}
+      {step===2&&<Step2 selProds={selProds} prodOpts={{}} extraVals={{}} startDt={startDt} setStartDt={setStartDt} endDt={endDt} setEndDt={setEndDt} monthSegs={monthSegs}/>}
+      {step===3&&<Step3 selProds={selProds} onConfirm={computeAndGo} onSkip={function(){computeAndGo(null,null);}} onReset={doReset} monthSegs={monthSegs} prodOpts={{}} extraVals={{}}/>}
+      {step===4&&results&&<Step4 results={results} startDt={startDt} endDt={endDt} hasBilling={!!results} prodOpts={{}}/>}
+
+      <div style={{display:"flex",justifyContent:"space-between",gap:8}}>
+        <button onClick={function(){setStep(function(s){return Math.max(1,s-1);});}} disabled={step===1} style={{padding:"10px 20px",borderRadius:8,border:"1.5px solid #ddd",background:"#fff",color:"#555",fontSize:13,cursor:step===1?"default":"pointer",opacity:step===1?0.4:1,fontWeight:600}}>이전</button>
+        {step<3&&<button onClick={function(){if(canNext())setStep(function(s){return s+1;});}} disabled={!canNext()} style={{padding:"10px 24px",borderRadius:8,border:"none",background:green,color:"#fff",fontSize:13,cursor:canNext()?"pointer":"default",opacity:canNext()?1:0.4,fontWeight:700}}>다음</button>}
+        {step===4&&<button onClick={doReset} style={{padding:"10px 20px",borderRadius:8,border:"none",background:"#e8f9f0",color:darkGreen,fontSize:13,cursor:"pointer",fontWeight:700}}>처음부터</button>}
+      </div>
+
+      <div style={{padding:"10px 14px",background:"#fff",borderRadius:10,fontSize:10,color:"#888",lineHeight:1.8}}>
+        NAVER WORKS SLA 계산기 (참고용) | 크레딧: 10원 단위 미만 절삭, 실제 납부금액 초과 불가
+        <a href={NW_SLA_URL} target="_blank" rel="noreferrer" style={{color:green,marginLeft:6}}>공식 SLA 원문</a>
+      </div>
+    </div>
+  );
+}
+
+// ── 메인 App (탭 분리) ──────────────────────────────────────
+const STEPS=[{num:1,label:"장애 상품 선택",icon:"🖥"},{num:2,label:"장애 기간 입력",icon:"📅"},{num:3,label:"이용요금 업로드",icon:"📂"},{num:4,label:"결과 확인",icon:"📋"}];
+
+function App(){
+  const[tab,setTab]=useState("ncp"); // "ncp" | "nw"
+  const[step,setStep]=useState(1);
+  const[selProds,setSelProds]=useState([]);const[prodOpts,setProdOpts]=useState({});const[extraVals,setExtraVals]=useState({});
+  const[startDt,setStartDt]=useState("");const[endDt,setEndDt]=useState("");
+  const[billingData,setBillingData]=useState(null);const[results,setResults]=useState(null);
+  const[nwResetKey,setNwResetKey]=useState(0);
+  const monthSegs=startDt&&endDt?splitByMonth(startDt,endDt):[];
+
+  function doReset(){
+    // NCP 탭 초기화
+    setStep(1);setResults(null);setBillingData(null);setStartDt("");setEndDt("");
+    setSelProds([]);setProdOpts({});setExtraVals({});
+    // NW 탭도 key 교체로 강제 remount 초기화
+    setNwResetKey(k=>k+1);
+  }
+  function canNext(){if(step===1)return selProds.length>0;if(step===2)return monthSegs.length>0;return false;}
+  function stepDone(s){if(s===1)return selProds.length>0;if(s===2)return monthSegs.length>0;if(s===3)return!!results;if(s===4)return!!results;return false;}
+
+  function computeAndGo(fee,det){
+    const hasBilling=!!fee&&Object.keys(fee).length>0;
+    setBillingData(hasBilling?fee:null);
+    const segs=splitByMonth(startDt,endDt);const res=[];
+    selProds.forEach(prod=>{
+      const{tiers}=getActivePolicy(prod,prodOpts);const ev=extraVals[prod]||{};
+      segs.forEach(seg=>{
+        const mk=seg.year+"-"+pad2(seg.month+1);
+        const feeNum=fee&&fee[prod]&&fee[prod][mk]?fee[prod][mk]:0;
+        const details=(det&&det[prod]&&det[prod][mk])||[];
+        const uptime=calcUptime(prod,seg.minutes,seg.year,seg.month,ev);
+        const rate=getRateFromUptime(uptime,tiers);
+        const credit=feeNum>0?Math.floor(feeNum*rate/10)*10:0;
+        res.push({prod,year:seg.year,month:seg.month,downMin:seg.minutes,uptime,rate,feeNum,credit,details});
+      });
+    });
+    setResults(res);setStep(4);
+  }
+
+  const isNw=tab==="nw";
+  const themeBlue="#1565c0",themeGreen="#00c73c";
+
+  return(
+    <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",background:"#f0f4f8",minHeight:"100vh",padding:"12px 16px"}}>
+      <div style={{maxWidth:760,margin:"0 auto"}}>
+
+        
+        <div style={{padding:"8px 20px 4px",background:isNw?"linear-gradient(135deg,#005c1a,#003d11)":"linear-gradient(135deg,#0d3b7a,#061f4a)",borderRadius:"14px 14px 0 0",display:"flex",alignItems:"center",gap:8,justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <span style={{fontSize:10,fontWeight:700,color:"rgba(255,255,255,.9)",background:"rgba(255,255,255,.18)",border:"1px solid rgba(255,255,255,.35)",borderRadius:4,padding:"1px 8px",letterSpacing:"0.05em"}}>사내용</span>
+            <span style={{fontSize:9,fontWeight:700,color:"rgba(255,255,255,.75)",background:"rgba(255,165,0,.35)",border:"1px solid rgba(255,165,0,.5)",borderRadius:4,padding:"1px 7px",letterSpacing:"0.05em"}}>BETA</span>
+          </div>
+          <span style={{fontSize:9,color:"rgba(255,255,255,.5)"}}>참고용 · 공식 원문 병행 확인 권장</span>
+        </div>
+        <div style={{padding:"14px 20px",marginBottom:0,
+          background:isNw?"linear-gradient(135deg,#00c73c,#007a28)":"linear-gradient(135deg,#1565c0,#0d47a1)",
+          display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:17,fontWeight:700,color:"#fff"}}>
+              {isNw?"🟢 NAVER WORKS SLA 계산기":"🔵 NCP SLA 계산기"}
+            </div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,.85)",marginTop:2}}>
+              {isNw?"NAVER WORKS 공식 SLA 기준 · 청구서 자동파싱":"공식 SLA 기준 · 청구서 자동파싱"}
+            </div>
+          </div>
+          <a href={isNw?NW_SLA_URL:SLA_URL} target="_blank" rel="noreferrer"
+            style={{fontSize:11,color:"#fff",background:"rgba(255,255,255,.15)",border:"1px solid rgba(255,255,255,.3)",padding:"5px 12px",borderRadius:8,textDecoration:"none"}}>
+            📄 공식 SLA
+          </a>
+        </div>
+
+        
+        <div style={{display:"flex",background:"#fff",borderBottom:"2px solid #e0e0e0",marginBottom:12,boxShadow:"0 1px 4px rgba(0,0,0,.06)"}}>
+          {[["ncp","🔵 NCP 클라우드",themeBlue],["nw","🟢 NAVER WORKS",themeGreen]].map(([key,label,color])=>(
+            <button key={key} onClick={()=>setTab(key)}
+              style={{flex:1,padding:"12px 8px",border:"none",borderBottom:tab===key?"3px solid "+color:"3px solid transparent",
+                background:"#fff",fontSize:13,fontWeight:tab===key?700:400,
+                color:tab===key?color:"#888",cursor:"pointer",transition:"all 0.15s",marginBottom:"-2px"}}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div style={{padding:"4px 14px",background:"#f8f9fa",borderBottom:"1px solid #e0e0e0",marginBottom:12,display:"flex",justifyContent:"flex-end",alignItems:"center",gap:10}}>
+          <span style={{fontSize:10,color:"#bbb",fontFamily:"monospace"}}>{APP_VERSION}</span>
+          <span style={{fontSize:10,color:"#ddd"}}>|</span>
+          <span style={{fontSize:10,color:"#bbb"}}>{APP_DATE}</span>
+        </div>
+
+        
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          {isNw
+            ? <NwApp key={"nw-"+nwResetKey}/>
+            : <>
+                <div style={{background:"#fff",borderRadius:12,padding:"14px 16px",boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+                  <div style={{display:"flex",alignItems:"center"}}>
+                    {STEPS.map((s,i)=>{const done=stepDone(s.num),active=step===s.num;return(
+                      <div key={s.num} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",position:"relative"}}>
+                        {i>0&&<div style={{position:"absolute",left:0,top:14,width:"50%",height:3,background:stepDone(s.num-1)?themeBlue:"#e0e0e0",zIndex:0}}/>}
+                        {i<3&&<div style={{position:"absolute",right:0,top:14,width:"50%",height:3,background:done?themeBlue:"#e0e0e0",zIndex:0}}/>}
+                        <div onClick={()=>{if(done||active||stepDone(s.num-1))setStep(s.num);}} style={{width:28,height:28,borderRadius:"50%",background:done?themeBlue:active?"#42a5f5":"#e0e0e0",color:"#fff",fontSize:12,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",position:"relative",zIndex:1,cursor:"pointer",boxShadow:active?"0 0 0 3px rgba(66,165,245,.4)":"none"}}>
+                          {done&&step>s.num?"✓":s.icon}
+                        </div>
+                        <div style={{fontSize:10,marginTop:4,color:active?themeBlue:done?"#555":"#aaa",fontWeight:active?700:400,textAlign:"center"}}>{s.label}</div>
+                      </div>
+                    );})}
+                  </div>
+                </div>
+                {step===1&&<Step1 selProds={selProds} setSelProds={setSelProds} prodOpts={prodOpts} setProdOpts={setProdOpts} extraVals={extraVals} setExtraVals={setExtraVals}/>}
+                {step===2&&<Step2 selProds={selProds} prodOpts={prodOpts} extraVals={extraVals} startDt={startDt} setStartDt={setStartDt} endDt={endDt} setEndDt={setEndDt} monthSegs={monthSegs}/>}
+                {step===3&&<Step3 selProds={selProds} onConfirm={computeAndGo} onSkip={()=>computeAndGo(null,null)} onReset={doReset} monthSegs={monthSegs} prodOpts={prodOpts} extraVals={extraVals}/>}
+                {step===4&&results&&<Step4 results={results} startDt={startDt} endDt={endDt} hasBilling={!!billingData} prodOpts={prodOpts}/>}
+                <div style={{display:"flex",justifyContent:"space-between",gap:8}}>
+                  <button onClick={()=>setStep(s=>Math.max(1,s-1))} disabled={step===1} style={{padding:"10px 20px",borderRadius:8,border:"1.5px solid #ddd",background:"#fff",color:"#555",fontSize:13,cursor:step===1?"default":"pointer",opacity:step===1?0.4:1,fontWeight:600}}>이전</button>
+                  {step<3&&<button onClick={()=>{if(canNext())setStep(s=>s+1);}} disabled={!canNext()} style={{padding:"10px 24px",borderRadius:8,border:"none",background:themeBlue,color:"#fff",fontSize:13,cursor:canNext()?"pointer":"default",opacity:canNext()?1:0.4,fontWeight:700}}>다음</button>}
+                  {step===4&&<button onClick={doReset} style={{padding:"10px 20px",borderRadius:8,border:"none",background:"#e3f2fd",color:themeBlue,fontSize:13,cursor:"pointer",fontWeight:700}}>🔄 처음부터</button>}
+                </div>
+                <div style={{marginTop:4,padding:"10px 14px",background:"#fff",borderRadius:10,fontSize:10,color:"#888",lineHeight:1.8,boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+                  ⚠ 유의사항 — 본 계산기는 공식 NCP SLA 정책 기반 참고용입니다. 최신 정책은 <a href={SLA_URL} target="_blank" rel="noreferrer" style={{color:themeBlue,fontWeight:600}}>공식 SLA 정책 원문</a>에서 확인하세요.
+                  File Storage / Media Connect Center / WORKBOX의 일부 보상 상한값은 공식 원문 재확인을 권장합니다.
+                </div>
+              </>
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+
+</script>
+<script>
+// Babel 로드 완료 후 실행
+if (typeof Babel !== 'undefined') {
+  runApp();
+} else {
+  showErr('Babel 로딩 실패');
+}
+</script>
+</body>
+</html>
